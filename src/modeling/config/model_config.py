@@ -47,14 +47,14 @@ class ModelConfig:
 
     # ── Evaluation ────────────────────────────────────────
     eval_metric: list[str] = field(
-        default_factory=lambda: ["logloss", "aucpr"]
+        default_factory=lambda: ["logloss", "auc"]
     )
     scale_pos_weight: float = 1.0
 
     # ── Guardrail thresholds ──────────────────────────────
-    min_f1: float = 0.10
-    min_pr_auc: float = 0.05
-    f1_improve_eps: float = 1e-6
+    min_f2: float = 0.10
+    min_roc_auc: float = 0.05
+    f2_improve_eps: float = 1e-6
 
     # ── Scoring ───────────────────────────────────────────
     risk_threshold_pct: float = 70.0

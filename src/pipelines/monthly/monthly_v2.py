@@ -120,8 +120,8 @@ def run_monthly_v2(
         logger.info("STEP 4/8: Guardrail check")
         passed, guardrail_msg = check_guardrail(
             metrics,
-            min_f1=model_config.min_f1,
-            min_pr_auc=model_config.min_pr_auc,
+            min_f2=model_config.min_f2,
+            min_roc_auc=model_config.min_roc_auc,
         )
         summary["guardrail_passed"] = passed
         summary["guardrail_msg"] = guardrail_msg
@@ -135,15 +135,15 @@ def run_monthly_v2(
         logger.info("=" * 70)
         logger.info("STEP 5/8: Accept/Reject decision")
 
-        prev_f1 = None
+        prev_f2 = None
         try:
             prev_cfg = load_latest_accepted_best_config(engine, horizon=horizon)
-            prev_f1 = float(prev_cfg.get("metric_f1_val", 0))
+            prev_f2 = float(prev_cfg.get("metric_f2_val", 0))
         except Exception:
             pass
 
         accepted, rule = check_accept_reject(
-            metrics["f1"], prev_f1, eps=model_config.f1_improve_eps,
+            metrics["f2"], prev_f2, eps=model_config.f2_improve_eps,
         )
         summary["accepted"] = accepted
         summary["accept_rule"] = rule
@@ -151,12 +151,12 @@ def run_monthly_v2(
         # Store config (accepted or rejected)
         config_record = {
             "horizon": horizon,
-            "metric_f1_val": metrics["f1"],
-            "metric_pr_auc_val": metrics["pr_auc"],
+            "metric_f2_val": metrics["f2"],
+            "metric_roc_auc_val": metrics["roc_auc"],
             "threshold": metrics["threshold"],
             "is_accepted": accepted,
             "accept_rule": rule,
-            "prev_accepted_f1": prev_f1,
+            "prev_accepted_f2": prev_f2,
             "accepted_at": pd.Timestamp.utcnow().to_pydatetime(),
             "notes": f"v2 pipeline; features={len(ds.feature_names)}",
         }

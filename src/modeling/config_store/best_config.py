@@ -18,8 +18,8 @@ def ensure_best_config_table(engine: Engine) -> None:
         best_threshold    DOUBLE PRECISION NOT NULL,
         best_spw          DOUBLE PRECISION NOT NULL,
 
-        metric_f1_val     DOUBLE PRECISION,
-        metric_pr_auc_val DOUBLE PRECISION,
+        metric_f2_val     DOUBLE PRECISION,
+        metric_roc_auc_val DOUBLE PRECISION,
         val_month         INT,
         target_month      INT,
 
@@ -28,7 +28,7 @@ def ensure_best_config_table(engine: Engine) -> None:
 
         -- production gating
         is_accepted       BOOLEAN NOT NULL DEFAULT TRUE,
-        prev_accepted_f1  DOUBLE PRECISION,
+        prev_accepted_f2  DOUBLE PRECISION,
         accept_rule       TEXT,
         accepted_at       TIMESTAMP,
 
@@ -44,10 +44,19 @@ def ensure_best_config_table(engine: Engine) -> None:
     # add new columns if table already existed
     alter_sql = """
     ALTER TABLE data_static.model_best_config
+    ADD COLUMN IF NOT EXISTS metric_f2_val DOUBLE PRECISION;
+
+    ALTER TABLE data_static.model_best_config
+    ADD COLUMN IF NOT EXISTS metric_roc_auc_val DOUBLE PRECISION;
+
+    ALTER TABLE data_static.model_best_config
     ADD COLUMN IF NOT EXISTS is_accepted BOOLEAN NOT NULL DEFAULT TRUE;
 
     ALTER TABLE data_static.model_best_config
     ADD COLUMN IF NOT EXISTS prev_accepted_f1 DOUBLE PRECISION;
+
+    ALTER TABLE data_static.model_best_config
+    ADD COLUMN IF NOT EXISTS prev_accepted_f2 DOUBLE PRECISION;
 
     ALTER TABLE data_static.model_best_config
     ADD COLUMN IF NOT EXISTS accept_rule TEXT;
@@ -68,25 +77,25 @@ def upsert_best_config(engine: Engine, best_config: dict) -> None:
         as_of_month, horizon,
         best_k, use_static,
         best_threshold, best_spw,
-        metric_f1_val, metric_pr_auc_val, val_month, target_month,
+        metric_f2_val, metric_roc_auc_val, val_month, target_month,
         notes,
-        is_accepted, prev_accepted_f1, accept_rule, accepted_at
+        is_accepted, prev_accepted_f2, accept_rule, accepted_at
     )
     VALUES (
         :as_of_month, :horizon,
         :best_k, :use_static,
         :best_threshold, :best_spw,
-        :metric_f1_val, :metric_pr_auc_val, :val_month, :target_month,
+        :metric_f2_val, :metric_roc_auc_val, :val_month, :target_month,
         :notes,
-        :is_accepted, :prev_accepted_f1, :accept_rule, :accepted_at
+        :is_accepted, :prev_accepted_f2, :accept_rule, :accepted_at
     )
     ON CONFLICT (as_of_month, horizon) DO UPDATE SET
         best_k=EXCLUDED.best_k,
         use_static=EXCLUDED.use_static,
         best_threshold=EXCLUDED.best_threshold,
         best_spw=EXCLUDED.best_spw,
-        metric_f1_val=EXCLUDED.metric_f1_val,
-        metric_pr_auc_val=EXCLUDED.metric_pr_auc_val,
+        metric_f2_val=EXCLUDED.metric_f2_val,
+        metric_roc_auc_val=EXCLUDED.metric_roc_auc_val,
         val_month=EXCLUDED.val_month,
         target_month=EXCLUDED.target_month,
         created_at=now(),
