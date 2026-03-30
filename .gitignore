@@ -40,6 +40,14 @@ logs/
 *.onnx
 *.parquet
 *.csv
+*.xls
+*.xlsx
+*.xlsm
+*.xlsb
+*.xlxs
+*.zip
+*.rar
+*.7z
 
 # ── ML experiment tracking ─────────────
 mlruns/
