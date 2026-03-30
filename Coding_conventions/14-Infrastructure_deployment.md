@@ -217,6 +217,8 @@ Bị cấm trong `src/`:
 
 ## 5. Dockerfile conventions / Quy ước Dockerfile
 
+> **Cross-reference / Tham chiếu chéo**: Các quy ước Docker production-grade bổ sung (HEALTHCHECK trong Dockerfile, image tagging với semver+SHA, vulnerability scanning trong CI) được định nghĩa trong `18-Observability_orchestration_conventions` §4.
+
 ### 5.1 A Dockerfile has one job: package the runtime environment / Dockerfile có một việc: đóng gói runtime environment
 
 #### EN
@@ -571,6 +573,8 @@ Nếu docker-compose được dùng cho production deployment, các quy tắc b�
 
 ## 7. Infrastructure as Code conventions / Quy ước Infrastructure as Code
 
+> **Cross-reference / Tham chiếu chéo**: Các quy ước Terraform nâng cao (module structure chi tiết, naming conventions cho resource, provider/module version pinning) được định nghĩa trong `18-Observability_orchestration_conventions` §5.
+
 ### 7.1 Context declaration required / Bắt buộc khai báo context
 
 #### EN
@@ -782,6 +786,8 @@ Nếu dự án không dùng IaC tool, các quy tắc sau áp dụng:
 ---
 
 ## 8. Kubernetes conventions / Quy ước Kubernetes
+
+> **Cross-reference / Tham chiếu chéo**: Các quy ước Kubernetes nâng cao (RBAC, PodDisruptionBudget, namespace topology cho monitoring stack, ConfigMap versioning) được định nghĩa trong `18-Observability_orchestration_conventions` §6.
 
 ### 8.1 Context declaration required / Bắt buộc khai báo context
 
