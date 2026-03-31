@@ -1,11 +1,11 @@
-"""CSKH confirmed churner CSV loader.
+"""CSKH confirmed churner file loader.
 
-Reads CSV files from the CSKH directory (Roi_bo_MM_YY.csv),
+Reads CSV/XLSX files from the CSKH directory (Roi_bo_MM_YY),
 loads them into ``cskh.confirmed_churners`` table, and provides
 functions to query confirmed IDs by month.
 
 File naming convention:
-    Roi_bo_MM_YY.csv  (e.g. Roi_bo_01_25 = tháng 01/2025)
+    Roi_bo_MM_YY.csv or Roi_bo_MM_YY.xlsx  (e.g. Roi_bo_01_25 = thang 01/2025)
 
 Conventions applied:
   - 13-Data_ML §5.1: Dedicated adapter per data source.
@@ -29,9 +29,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Regex: Roi_bo_MM_YY with optional .csv extension
+# Regex: Roi_bo_MM_YY with optional .csv/.xlsx extension
 _CSKH_FILENAME_RE = re.compile(
-    r"^Roi_bo_(\d{2})_(\d{2})(?:\.csv)?$", re.IGNORECASE
+    r"^Roi_bo_(\d{2})_(\d{2})(?:\.(?:csv|xlsx))?$", re.IGNORECASE
 )
 
 CSKH_SCHEMA = "cskh"
@@ -77,30 +77,30 @@ def parse_cskh_filename(filename: str) -> tuple[int, int] | None:
     return int(match.group(1)), int(match.group(2))
 
 
-def load_cskh_csv_to_db(
+def load_cskh_file_to_db(
     engine: Engine,
-    csv_path: Path,
+    file_path: Path,
     *,
     skip_if_exists: bool = True,
 ) -> int:
-    """Load one CSKH CSV file into the DB.
+    """Load one CSKH file (CSV or XLSX) into the DB.
 
     Args:
         engine: SQLAlchemy engine.
-        csv_path: Path to CSKH CSV file (Roi_bo_MM_YY.csv).
+        file_path: Path to CSKH file (Roi_bo_MM_YY.csv or .xlsx).
         skip_if_exists: Skip if data for this month/year already in DB.
 
     Returns:
         Number of rows inserted.
 
     Raises:
-        ValueError: If filename format is invalid or CSV lacks cms_code_enc.
+        ValueError: If filename format is invalid or file lacks cms_code_enc.
     """
-    parsed = parse_cskh_filename(csv_path.name)
+    parsed = parse_cskh_filename(file_path.name)
     if parsed is None:
         raise ValueError(
-            f"Invalid CSKH filename: {csv_path.name}. "
-            f"Expected: Roi_bo_MM_YY.csv (e.g. Roi_bo_01_25.csv)"
+            f"Invalid CSKH filename: {file_path.name}. "
+            f"Expected: Roi_bo_MM_YY.csv/.xlsx (e.g. Roi_bo_01_25.xlsx)"
         )
 
     month, year = parsed
@@ -123,11 +123,18 @@ def load_cskh_csv_to_db(
                 )
                 return 0
 
-    # Read CSV
-    df = pd.read_csv(csv_path)
+    # Read file (CSV or XLSX)
+    suffix = file_path.suffix.lower()
+    if suffix == ".xlsx":
+        df = pd.read_excel(file_path)
+    elif suffix == ".csv":
+        df = pd.read_csv(file_path)
+    else:
+        raise ValueError(f"Unsupported file format: {suffix}")
+
     if "cms_code_enc" not in df.columns:
         raise ValueError(
-            f"CSKH file {csv_path.name} must contain 'cms_code_enc' column. "
+            f"CSKH file {file_path.name} must contain 'cms_code_enc' column. "
             f"Found columns: {list(df.columns)}"
         )
 
@@ -143,7 +150,7 @@ def load_cskh_csv_to_db(
     """)
 
     rows = [
-        {"cms": cms_id, "m": month, "y": year, "src": csv_path.name}
+        {"cms": cms_id, "m": month, "y": year, "src": file_path.name}
         for cms_id in ids
     ]
 
@@ -151,8 +158,8 @@ def load_cskh_csv_to_db(
         conn.execute(insert_sql, rows)
 
     logger.info(
-        "CSKH loaded: %s → %d IDs for %02d/%02d",
-        csv_path.name, len(rows), month, year,
+        "CSKH loaded: %s -> %d IDs for %02d/%02d",
+        file_path.name, len(rows), month, year,
     )
     return len(rows)
 
@@ -161,14 +168,14 @@ def scan_and_load_cskh_dir(
     engine: Engine,
     cskh_dir: Path,
 ) -> dict[str, int]:
-    """Scan CSKH directory and load any new CSV files into DB.
+    """Scan CSKH directory and load any new CSV/XLSX files into DB.
 
     Args:
         engine: SQLAlchemy engine.
-        cskh_dir: Directory containing Roi_bo_MM_YY.csv files.
+        cskh_dir: Directory containing Roi_bo_MM_YY.csv/.xlsx files.
 
     Returns:
-        Dict mapping filename → rows inserted.
+        Dict mapping filename -> rows inserted.
     """
     ensure_cskh_schema(engine)
 
@@ -177,19 +184,23 @@ def scan_and_load_cskh_dir(
         return {}
 
     results: dict[str, int] = {}
-    csv_files = sorted(cskh_dir.glob("Roi_bo_*.csv"))
+    # Collect both CSV and XLSX files
+    cskh_files = sorted(
+        list(cskh_dir.glob("Roi_bo_*.csv"))
+        + list(cskh_dir.glob("Roi_bo_*.xlsx"))
+    )
 
-    if not csv_files:
+    if not cskh_files:
         logger.info("No CSKH files found in %s", cskh_dir)
         return {}
 
-    for csv_path in csv_files:
+    for file_path in cskh_files:
         try:
-            n = load_cskh_csv_to_db(engine, csv_path)
-            results[csv_path.name] = n
+            n = load_cskh_file_to_db(engine, file_path)
+            results[file_path.name] = n
         except (ValueError, Exception) as exc:
-            logger.error("Failed to load %s: %s", csv_path.name, exc)
-            results[csv_path.name] = -1
+            logger.error("Failed to load %s: %s", file_path.name, exc)
+            results[file_path.name] = -1
 
     return results
 
