@@ -41,9 +41,7 @@ def score_all(
         effective_threshold = max(threshold, dynamic_threshold)
         logger.info(
             "Top %.1f%% cutoff requested. Dynamic threshold=%.4f, Original=%.4f",
-            top_percentile,
-            dynamic_threshold,
-            threshold,
+            top_percentile, dynamic_threshold, threshold,
         )
     else:
         effective_threshold = threshold
@@ -54,8 +52,7 @@ def score_all(
 
     logger.info(
         "Scored %d customers: effective_threshold=%.4f, flagged=%d (%.1f%%)",
-        len(scored),
-        effective_threshold,
+        len(scored), effective_threshold,
         int(scored["churn_flag"].sum()),
         scored["churn_flag"].mean() * 100,
     )
