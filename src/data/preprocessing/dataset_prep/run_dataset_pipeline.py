@@ -212,11 +212,11 @@ def run_dataset_pipeline(
     )
 
     if prototype:
-        # ✅ Success → cache to DB
+        #  Success → cache to DB
         logger.info("Prototype built successfully — caching to DB")
         save_prototype(engine, prototype, run_month, config.horizon_months)
     else:
-        # ⚠️ Cannot build → try cached fallback
+        #  Cannot build → try cached fallback
         logger.warning("Cannot build new prototype — attempting fallback")
 
         if not config.allow_prototype_fallback:

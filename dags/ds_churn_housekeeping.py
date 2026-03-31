@@ -98,7 +98,32 @@ with DAG(
     tags=["ds_churn", "maintenance"],
 ) as dag:
 
-    housekeeping = BashOperator(
-        task_id="run_housekeeping",
-        bash_command=HOUSEKEEPING_SCRIPT,
+    from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
+    from kubernetes.client import models as k8s
+
+    # Note: For logs sweeping, Airflow logs might be on a different PVC (or not needed locally if ephemeral pod)
+    # But we mount /churn_data PVC to sweep bundles, saved, failed data.
+    volume = k8s.V1Volume(
+        name="churn-data-mount",
+        host_path=k8s.V1HostPathVolumeSource(path="/data/churn_prediction/ftp_churn")
+    )
+    volume_mount = k8s.V1VolumeMount(
+        name="churn-data-mount",
+        mount_path="/churn_data",
+        sub_path=None,
+        read_only=False
+    )
+
+    housekeeping = KubernetesPodOperator(
+        task_id="run_housekeeping_k8s",
+        name="churn-housekeeping-pod",
+        namespace="default",
+        image="churn_app:latest",
+        image_pull_policy="IfNotPresent",
+        cmds=["/bin/bash", "-c", HOUSEKEEPING_SCRIPT],
+        env_vars={"CHURN_MODEL_DIR": "/churn_data/models"},
+        volumes=[volume],
+        volume_mounts=[volume_mount],
+        is_delete_operator_pod=True,
+        get_logs=True,
     )

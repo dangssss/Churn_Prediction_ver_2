@@ -14,35 +14,47 @@ with DAG(
     tags=["ds_churn", "ingest"],
 ) as dag:
 
-    import os
-    from airflow.operators.bash import BashOperator
+    from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
+    from kubernetes.client import models as k8s
     
-    # Calculate Project Root dynamically (dags/.. -> root)
-    # This ensures paths work regardless of AIRFLOW_HOME
-    PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    # Common volume configuration for data access
+    volume = k8s.V1Volume(
+        name="churn-data-mount",
+        host_path=k8s.V1HostPathVolumeSource(path="/data/churn_prediction/ftp_churn")
+    )
+    volume_mount = k8s.V1VolumeMount(
+        name="churn-data-mount",
+        mount_path="/churn_data",
+        sub_path=None,
+        read_only=False
+    )
     
-    # Run ingestion script locally
-    # Assumes code is at {PROJECT_ROOT}/src/ingestion/run_job_now.py
-    ingest_scan_and_load = BashOperator(
-        task_id="ingest_scan_and_load",
-        bash_command=f"python -m pipelines.ingestion.jobs.ingest_zip_job",
-        env={
-            # Env vars are loaded from .env by Airflow, append_env=True, but specific overrides can go here
-            "TZ": "Asia/Ho_Chi_Minh",
-            "PYTHONPATH": "/churn_source/src",  # Ensure imports work
-        },
-        append_env=True
+    ingest_scan_and_load = KubernetesPodOperator(
+        task_id="ingest_scan_and_load_k8s",
+        name="churn-ingestion-pod",
+        namespace="default",
+        image="churn_app:latest",
+        image_pull_policy="IfNotPresent",
+        cmds=["python", "-m", "pipelines.ingestion.jobs.ingest_zip_job"],
+        env_vars={"TZ": "Asia/Ho_Chi_Minh"},
+        volumes=[volume],
+        volume_mounts=[volume_mount],
+        is_delete_operator_pod=True,
+        get_logs=True,
     )
 
-    # NEW: Validation Step
-    validate_data = BashOperator(
-        task_id="validate_data",
-        bash_command=f"python -m pipelines.ingestion.ops.post_ingest_maintenance",
-        env={
-            "TZ": "Asia/Ho_Chi_Minh",
-            "PYTHONPATH": "/churn_source/src", # Ensure imports work
-        },
-        append_env=True,
+    validate_data = KubernetesPodOperator(
+        task_id="validate_data_k8s",
+        name="churn-ingestion-validate-pod",
+        namespace="default",
+        image="churn_app:latest",
+        image_pull_policy="IfNotPresent",
+        cmds=["python", "-m", "pipelines.ingestion.ops.post_ingest_maintenance"],
+        env_vars={"TZ": "Asia/Ho_Chi_Minh"},
+        volumes=[volume],
+        volume_mounts=[volume_mount],
+        is_delete_operator_pod=True,
+        get_logs=True,
     )
 
     trigger_features = TriggerDagRunOperator(
