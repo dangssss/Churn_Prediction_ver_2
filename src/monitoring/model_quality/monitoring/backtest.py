@@ -1,16 +1,17 @@
-
 from __future__ import annotations
 
 import pandas as pd
+from infra.yymm import shift_yymm
+from preprocess.dataset import load_scoring_table_for_k
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from infra.yymm import shift_yymm
-from preprocess.dataset import load_scoring_table_for_k
-from .ddl import ensure_monitoring_schema, DEFAULT_SCHEMA
+from .ddl import DEFAULT_SCHEMA, ensure_monitoring_schema
+
 
 def _risk_hist_table_name(risk_threshold_pct: int) -> str:
     return f"cus_risk_{int(risk_threshold_pct)}_hist"
+
 
 def run_backtest_precision_in_list(
     engine: Engine,
@@ -57,7 +58,9 @@ def run_backtest_precision_in_list(
     # churn truth at label_month
     df_label, _, _ = load_scoring_table_for_k(engine, k=int(best_k_for_population), window_end=int(label_window_end))
     df_label_truth = df_label[["cms_code_enc", "is_churned_now"]].copy()
-    df_label_truth["is_churned_now"] = pd.to_numeric(df_label_truth["is_churned_now"], errors="coerce").fillna(0).astype(int)
+    df_label_truth["is_churned_now"] = (
+        pd.to_numeric(df_label_truth["is_churned_now"], errors="coerce").fillna(0).astype(int)
+    )
 
     # list join
     df_list2 = df_list.merge(df_label_truth, on="cms_code_enc", how="left")

@@ -1,17 +1,16 @@
 # jobs/ingest_zip_job.py (refactored for 4 new tables + error handling)
 from __future__ import annotations
 
-import logging
 import os
-from pathlib import Path
-from typing import Dict, Any, Optional
 import shutil
+from pathlib import Path
+from typing import Any
 
-from data.ingestion.resources import PostgresConfig, FSConfig, get_pg_conn
-from data.ingestion.ops.unzip_and_discover import unzip_and_discover
+from data.ingestion.logging_config import get_logger
 from data.ingestion.ops.copy_and_insert_to_production import copy_and_insert_to_production
 from data.ingestion.ops.post_ingest_maintenance import post_ingest_maintenance
-from data.ingestion.logging_config import get_logger
+from data.ingestion.ops.unzip_and_discover import unzip_and_discover
+from data.ingestion.resources import FSConfig, PostgresConfig, get_pg_conn
 
 # Setup logging
 logger = get_logger(__name__)
@@ -28,23 +27,23 @@ def ingest_zip_job(
     source_has_header: bool = True,
     injection_mode: str = "sanitize",
     use_encryption: bool = True,
-    encryption_mapping_file: Optional[str] = None,
+    encryption_mapping_file: str | None = None,
     skip_if_logged: bool = False,
     use_test_schema: bool = None,  # Auto-detect from ENV if None
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Job xử lý 1 file ZIP: unzip -> transform + insert into production -> maintenance.
 
-    
+
     Hỗ trợ 4 bảng (monthly + snapshot modes) với error handling:
     - Nếu parse tên ZIP fail -> (unzip_and_discover) copy ZIP vào fail_data folder, log error
     - Nếu CSV header sai -> copy ZIP vào fail_data folder (tại đây)
     - Nếu unzip fail -> (unzip_and_discover) copy ZIP vào fail_data folder, log error
     - Nếu insert fail -> copy ZIP vào fail_data folder
-    
+
     Args:
         use_test_schema: Nếu True, dùng csv_schema_test.py. Nếu None, auto-detect từ env var USE_TEST_SCHEMA.
-    
+
     Returns:
         dict {
             "zip_name": str,
@@ -61,11 +60,11 @@ def ingest_zip_job(
     # TODO NAMNT check lai
     if use_test_schema is None:
         use_test_schema = os.getenv("USE_TEST_SCHEMA", "").lower() in ("1", "true", "yes")
-    
+
     # Set environment variable để copy_and_insert_to_production biết dùng test schema
     if use_test_schema:
         os.environ["USE_TEST_SCHEMA"] = "1"
-    
+
     zip_name = zip_path.name
     result = {
         "zip_name": zip_name,
@@ -142,7 +141,7 @@ def ingest_zip_job(
         result["error"] = f"copy_and_insert_to_production failed: {str(e)}"
         result["success"] = False
         logger.error(f"[FAIL] copy_and_insert_to_production for {zip_name}: {e}")
-        
+
         # Trước đây: move ZIP vào fail_data
         # Bây giờ: COPY ZIP đang ở extract_dir sang fail_data, KHÔNG move/xoá bản gốc
         try:
@@ -163,12 +162,11 @@ def ingest_zip_job(
                     fail_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(str(zip_path), str(fail_path))
                     logger.info(
-                        f"[COPY] Copied {zip_name} from {zip_path} to fail_data {fail_path} "
-                        "(src_zip not found)."
+                        f"[COPY] Copied {zip_name} from {zip_path} to fail_data {fail_path} (src_zip not found)."
                     )
         except Exception as move_err:
             logger.warning(f"[WARN] Could not copy ZIP to fail_data: {move_err}")
-        
+
         return result
 
     # 4) Mark as success (data is already in production)

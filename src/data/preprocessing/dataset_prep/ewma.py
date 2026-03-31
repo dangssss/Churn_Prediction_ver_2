@@ -69,7 +69,8 @@ def compute_ewma(
         if len(monthly_cols) < 2:
             logger.debug(
                 "EWMA %s: insufficient monthly columns (%s). Defaulting.",
-                prefix, monthly_cols,
+                prefix,
+                monthly_cols,
             )
             # Fallback: use latest value if available
             fallback_col = f"{prefix}_last"
@@ -86,13 +87,12 @@ def compute_ewma(
         result[f"ewma_{prefix}"] = ewma_all[:, -1]
 
         # delta = ewma_current - ewma_penultimate (not raw oldest)
-        result[f"delta_ewma_{prefix}"] = (
-            ewma_all[:, -1] - ewma_all[:, -2]
-        )
+        result[f"delta_ewma_{prefix}"] = ewma_all[:, -1] - ewma_all[:, -2]
 
         logger.debug(
             "EWMA %s: %d monthly columns processed",
-            prefix, len(monthly_cols),
+            prefix,
+            len(monthly_cols),
         )
 
     # Legacy compatibility: ewma = ewma_item, delta_ewma = delta_ewma_item

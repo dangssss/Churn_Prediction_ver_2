@@ -1,22 +1,21 @@
-
 from __future__ import annotations
 
 import json
-from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from .psi import make_numeric_profile, counts_on_profile, psi_from_counts, discrete_ks_from_counts
-from .ddl import ensure_monitoring_schema, DEFAULT_SCHEMA
+from .ddl import DEFAULT_SCHEMA, ensure_monitoring_schema
+from .psi import counts_on_profile, discrete_ks_from_counts, make_numeric_profile, psi_from_counts
+
 
 def compute_feature_profile(
     df_train: pd.DataFrame,
     *,
-    feat_cols: List[str],
-    cat_cols: List[str] | None = None,
+    feat_cols: list[str],
+    cat_cols: list[str] | None = None,
     n_bins: int = 10,
     max_features: int = 200,
 ) -> dict:
@@ -53,13 +52,21 @@ def compute_feature_profile(
         prof["categorical"][c] = {"top": vc.to_dict(), "n": int(len(s))}
     return prof
 
+
 def compute_feature_drift(df_current: pd.DataFrame, profile: dict) -> pd.DataFrame:
     rows = []
     num_prof = profile.get("numeric", {}) or {}
     for feat, p in num_prof.items():
         if feat not in df_current.columns:
-            rows.append({"feature_name": feat, "psi": None, "ks_stat": None, "severity": "ALERT",
-                         "details_json": {"reason": "missing_in_current"}})
+            rows.append(
+                {
+                    "feature_name": feat,
+                    "psi": None,
+                    "ks_stat": None,
+                    "severity": "ALERT",
+                    "details_json": {"reason": "missing_in_current"},
+                }
+            )
             continue
         cur_counts = counts_on_profile(df_current[feat], p)
         train_counts = np.array(p["train_counts"], dtype=float)
@@ -70,14 +77,20 @@ def compute_feature_drift(df_current: pd.DataFrame, profile: dict) -> pd.DataFra
             sev = "ALERT"
         elif psi > 0.1:
             sev = "WARN"
-        rows.append({
-            "feature_name": feat,
-            "psi": float(psi),
-            "ks_stat": float(ks),
-            "severity": sev,
-            "details_json": {"train_n": p.get("n"), "cur_n": int(pd.to_numeric(df_current[feat], errors="coerce").dropna().shape[0])}
-        })
+        rows.append(
+            {
+                "feature_name": feat,
+                "psi": float(psi),
+                "ks_stat": float(ks),
+                "severity": sev,
+                "details_json": {
+                    "train_n": p.get("n"),
+                    "cur_n": int(pd.to_numeric(df_current[feat], errors="coerce").dropna().shape[0]),
+                },
+            }
+        )
     return pd.DataFrame(rows)
+
 
 def upsert_feature_drift(
     engine: Engine,
@@ -116,17 +129,21 @@ def upsert_feature_drift(
         psi = r.get("psi")
         sev = r.get("severity")
         is_anom = bool(sev == "ALERT")
-        payload.append({
-            "window_end": int(window_end),
-            "horizon": int(horizon),
-            "best_k": int(best_k) if best_k is not None else None,
-            "feature_name": str(r.get("feature_name")),
-            "psi": float(psi) if psi is not None and not pd.isna(psi) else None,
-            "ks_stat": float(r.get("ks_stat")) if r.get("ks_stat") is not None and not pd.isna(r.get("ks_stat")) else None,
-            "severity": str(sev) if sev else None,
-            "is_anomaly": is_anom,
-            "details_json": json.dumps(r.get("details_json") or {}, ensure_ascii=False),
-        })
+        payload.append(
+            {
+                "window_end": int(window_end),
+                "horizon": int(horizon),
+                "best_k": int(best_k) if best_k is not None else None,
+                "feature_name": str(r.get("feature_name")),
+                "psi": float(psi) if psi is not None and not pd.isna(psi) else None,
+                "ks_stat": float(r.get("ks_stat"))
+                if r.get("ks_stat") is not None and not pd.isna(r.get("ks_stat"))
+                else None,
+                "severity": str(sev) if sev else None,
+                "is_anomaly": is_anom,
+                "details_json": json.dumps(r.get("details_json") or {}, ensure_ascii=False),
+            }
+        )
 
     with engine.begin() as conn:
         conn.execute(q, payload)

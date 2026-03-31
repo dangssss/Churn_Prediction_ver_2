@@ -1,25 +1,24 @@
 # ops/post_ingest_maintenance.py
 from __future__ import annotations
 
-import logging
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any
 
-from data.ingestion.resources import PostgresConfig, get_pg_conn
 from data.ingestion.logging_config import get_logger
+from data.ingestion.resources import PostgresConfig, get_pg_conn
 
 logger = get_logger(__name__)
 
 
 def post_ingest_maintenance(
-    meta: Dict[str, Any],
+    meta: dict[str, Any],
     pg_cfg: PostgresConfig,
     *,
     prod_schema: str = "public",
     ingest_schema: str = "ingest",
-    stg_rows: Optional[int] = None,
-    prod_rows: Optional[int] = None,
-    zip_path: Optional[Path] = None,
+    stg_rows: int | None = None,
+    prod_rows: int | None = None,
+    zip_path: Path | None = None,
 ) -> None:
     """
     Hậu xử lý sau khi nạp xong 1 ZIP:
@@ -47,10 +46,10 @@ def post_ingest_maintenance(
     cur = conn.cursor()
 
     try:
-        logger.info(f"Running post_ingest_maintenance for {prod_schema}.\"{table_name}\"")
+        logger.info(f'Running post_ingest_maintenance for {prod_schema}."{table_name}"')
 
         # 1) Đảm bảo schema ingest tồn tại
-        cur.execute(f"CREATE SCHEMA IF NOT EXISTS { ingest_schema };")
+        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {ingest_schema};")
 
         # 2) Tạo bảng ingest_log nếu chưa có
         cur.execute(f"""
@@ -70,20 +69,20 @@ def post_ingest_maintenance(
           finished_at       timestamptz DEFAULT now()
         );
         """)
-        
+
         # 2.1) Thêm các cột mới nếu chưa có (safe migration)
-        for col_name, col_type in [('file_size', 'bigint'), ('file_mtime', 'double precision')]:
+        for col_name, col_type in [("file_size", "bigint"), ("file_mtime", "double precision")]:
             try:
                 cur.execute(f"ALTER TABLE {ingest_schema}.ingest_log ADD COLUMN IF NOT EXISTS {col_name} {col_type};")
-            except Exception:
-                # Column đã tồn tại hoặc lỗi khác - bỏ qua
-                pass
+            except Exception as e:
+                # Column đã tồn tại hoặc lỗi khác - log debug và quay lại
+                logger.debug("Column migration for %s: %s", col_name, e)
         conn.commit()
 
         # 3) ANALYZE bảng prod để tối ưu query plan
         if table_name:
             cur.execute(f'ANALYZE {prod_schema}."{table_name}";')
-            logger.info(f"Analyzed {prod_schema}.\"{table_name}\"")
+            logger.info(f'Analyzed {prod_schema}."{table_name}"')
         # 4) Ghi log success
         cur.execute(
             f"""
@@ -91,7 +90,7 @@ def post_ingest_maintenance(
               zip_name, base, table_name, period_key_month,
               prod_schema, staging_rows, prod_rows, file_size, file_mtime, status
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-            """,
+            """,  # noqa: S608
             (
                 zip_name or "",
                 base,
@@ -104,14 +103,10 @@ def post_ingest_maintenance(
                 file_mtime,
                 "success",
             ),
-        )   
-        
+        )
 
         conn.commit()
-        logger.info(
-            f"Logged success for zip={zip_name}, "
-            f"table={prod_schema}.\"{table_name}\", prod_rows={prod_rows}"
-        )
+        logger.info(f'Logged success for zip={zip_name}, table={prod_schema}."{table_name}", prod_rows={prod_rows}')
 
     except Exception as e:
         conn.rollback()

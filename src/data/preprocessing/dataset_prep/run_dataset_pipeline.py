@@ -35,6 +35,7 @@ from data.preprocessing.dataset_prep.cskh_loader import (
 )
 from data.preprocessing.dataset_prep.ewma import compute_ewma
 from data.preprocessing.dataset_prep.label_construction import (
+    build_training_windows,
     load_window_features,
 )
 from data.preprocessing.dataset_prep.leading_prototype import (
@@ -122,7 +123,8 @@ def run_dataset_pipeline(
     has_cskh = len(eval_ids) > 0
     logger.info(
         "CSKH result: %d confirmed IDs loaded (has_cskh=%s)",
-        len(eval_ids), has_cskh,
+        len(eval_ids),
+        has_cskh,
     )
 
     # ── Step 2: Activity tiering ──────────────────────────
@@ -135,9 +137,7 @@ def run_dataset_pipeline(
         pd.Timestamp(config.t_obs_override) if config.t_obs_override else None,
     )
     working_df = compute_recency(engine, working_df, t_obs, data_start)
-    working_df = assign_tiers(
-        working_df, config.recency_active, config.recency_at_risk
-    )
+    working_df = assign_tiers(working_df, config.recency_active, config.recency_at_risk)
 
     # Compute PU weight
     n_confirmed = len(eval_ids)
@@ -158,7 +158,9 @@ def run_dataset_pipeline(
 
     logger.info(
         "PU_WEIGHT_C = %.4f (n_confirmed=%d, n_active=%d)",
-        pu_weight_c, n_confirmed, n_active,
+        pu_weight_c,
+        n_confirmed,
+        n_active,
     )
 
     # ── Step 3: Load predict window + EWMA ────────────────
@@ -169,12 +171,8 @@ def run_dataset_pipeline(
 
     predict_window_df = load_window_features(engine, config.w_min, t_obs_end)
     if predict_window_df.empty:
-        raise RuntimeError(
-            f"Cannot load predict window for W={config.w_min} at {t_obs_end.date()}"
-        )
-    predict_window_df = compute_ewma(
-        predict_window_df, config.w_min, config.alpha_ewma
-    )
+        raise RuntimeError(f"Cannot load predict window for W={config.w_min} at {t_obs_end.date()}")
+    predict_window_df = compute_ewma(predict_window_df, config.w_min, config.alpha_ewma)
 
     # ── Step 4: Walk-forward → W* ─────────────────────────
     logger.info("═" * 60)
@@ -186,16 +184,22 @@ def run_dataset_pipeline(
     )
     w_search = list(range(config.w_min, w_max + 1))
     w_star = find_best_w(
-        engine, w_search, all_months, config.horizon_months,
-        config.alpha_ewma, config.min_train_windows,
+        engine,
+        w_search,
+        all_months,
+        config.horizon_months,
+        config.alpha_ewma,
+        config.min_train_windows,
     )
 
-    # Reload with W* if different from w_min
     if w_star != config.w_min:
         predict_window_df = load_window_features(engine, w_star, t_obs_end)
-        predict_window_df = compute_ewma(
-            predict_window_df, w_star, config.alpha_ewma
-        )
+        predict_window_df = compute_ewma(predict_window_df, w_star, config.alpha_ewma)
+
+    logger.info("Fetching historical training windows for W*=%d", w_star)
+    training_history_df = build_training_windows(
+        engine, w_star, all_months, config.horizon_months, config.alpha_ewma, config.min_train_windows
+    )
 
     # ── Step 5: Leading prototype (with fallback) ─────────
     logger.info("═" * 60)
@@ -206,8 +210,12 @@ def run_dataset_pipeline(
 
     # 5a. Try to build new prototype from CSKH data
     prototype = build_leading_prototype(
-        engine, eval_ids, t_obs, w_star,
-        config.alpha_ewma, config.sigma_reg,
+        engine,
+        eval_ids,
+        t_obs,
+        w_star,
+        config.alpha_ewma,
+        config.sigma_reg,
         min_prototype_samples=config.min_prototype_samples,
     )
 
@@ -221,8 +229,7 @@ def run_dataset_pipeline(
 
         if not config.allow_prototype_fallback:
             raise RuntimeError(
-                "No prototype available and fallback is disabled "
-                "(allow_prototype_fallback=False). Provide CSKH data."
+                "No prototype available and fallback is disabled (allow_prototype_fallback=False). Provide CSKH data."
             )
 
         prototype = load_latest_prototype(
@@ -267,8 +274,11 @@ def run_dataset_pipeline(
     logger.info("Active accounts to score: %d", len(active_df))
 
     active_df = assign_pseudo_labels(
-        active_df, prototype, eval_ids,
-        config.sim_threshold, config.recency_reliable_neg,
+        active_df,
+        prototype,
+        eval_ids,
+        config.sim_threshold,
+        config.recency_reliable_neg,
         trend_down_ratio=config.trend_down_ratio,
     )
 
@@ -279,12 +289,13 @@ def run_dataset_pipeline(
     logger.info("═" * 60)
     logger.info("STEP 7: Sample weighting + final dataset")
     active_df = apply_weights_and_smoothing(
-        active_df, pu_weight_c,
+        active_df,
+        pu_weight_c,
         config.label_smooth_eps_confirmed,
         config.label_smooth_eps_pseudo,
     )
 
-    result = build_final_dataset(active_df, eval_ids, NUMERIC_FEATURES)
+    result = build_final_dataset(active_df, training_history_df, eval_ids, NUMERIC_FEATURES)
 
     # ── Sanity checks ─────────────────────────────────────
     logger.info("═" * 60)
@@ -294,14 +305,18 @@ def run_dataset_pipeline(
     # ── Save pipeline artifacts ───────────────────────────
     if output_dir is not None:
         save_pipeline_artifacts(
-            result, config, t_obs, w_star, prototype, output_dir,
+            result,
+            config,
+            t_obs,
+            w_star,
+            prototype,
+            output_dir,
         )
 
     logger.info("═" * 60)
     if fallback_mode:
         logger.warning(
-            "Pipeline complete (FALLBACK MODE). Model evaluation will be "
-            "limited — no ground truth eval set available."
+            "Pipeline complete (FALLBACK MODE). Model evaluation will be limited — no ground truth eval set available."
         )
     else:
         logger.info("Pipeline complete. Ready for model training.")

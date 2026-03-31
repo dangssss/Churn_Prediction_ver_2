@@ -62,20 +62,14 @@ def assign_pseudo_labels(
 
     # Trend down: item_last < trend_down_ratio * item_avg
     if "item_last" in result.columns:
-        trend_down = (
-            (result["item_avg"] > 0)
-            & (result["item_last"] < result["item_avg"] * trend_down_ratio)
-        )
+        trend_down = (result["item_avg"] > 0) & (result["item_last"] < result["item_avg"] * trend_down_ratio)
     else:
         trend_down = ewma_down
 
     pseudo_churn = sim_high & ewma_down & trend_down
 
     # ── Reliable negative conditions ──────────────────────
-    reliable_neg = (
-        (result["recency_days"] <= recency_reliable_neg)
-        & (result["delta_ewma"] >= 0)
-    )
+    reliable_neg = (result["recency_days"] <= recency_reliable_neg) & (result["delta_ewma"] >= 0)
 
     # ── Assign labels ─────────────────────────────────────
     result["label_source"] = "pu_unlabeled"
@@ -83,9 +77,7 @@ def assign_pseudo_labels(
     result.loc[reliable_neg, "label_source"] = "reliable_neg"
 
     # Override with confirmed (eval set — highest priority)
-    result.loc[
-        result["cms_code_enc"].isin(eval_ids), "label_source"
-    ] = "confirmed"
+    result.loc[result["cms_code_enc"].isin(eval_ids), "label_source"] = "confirmed"
 
     label_counts = result["label_source"].value_counts()
     logger.info("Pseudo-label distribution: %s", label_counts.to_dict())

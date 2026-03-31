@@ -6,10 +6,10 @@ Data transformation rules cho 4 bảng mới:
 - Field filtering & casting
 """
 
-import re
-from typing import Any, Dict, Optional
-from datetime import datetime
 import hashlib
+import re
+from datetime import datetime
+from typing import Any
 
 
 class CustomerEncryption:
@@ -20,7 +20,7 @@ class CustomerEncryption:
 
     def __init__(self, salt: str = "ds_churn_secret_salt"):
         self.salt = salt
-        self._cache: Dict[str, str] = {}
+        self._cache: dict[str, str] = {}
 
     def encode(self, code: str) -> str:
         """
@@ -56,7 +56,7 @@ class CustomerEncryption:
         """Tải mapping từ file."""
         import json
 
-        with open(filepath, "r") as f:
+        with open(filepath) as f:
             self._cache = json.load(f)
 
 
@@ -100,7 +100,6 @@ class DatetimeNormalizer:
     FORMATS = [
         # Microseconds first
         "%Y-%m-%d %H:%M:%S.%f",  # 2025-11-20 11:40:30.209324
-        
         # 2-digit year formats (PRIORITY - must be before 4-digit to avoid conflicts)
         "%y-%m-%d %H:%M:%S",  # 20-01-01 00:00:00 → 2020-01-01 00:00:00
         "%y-%m-%d",  # 20-01-01 → 2020-01-01
@@ -110,7 +109,6 @@ class DatetimeNormalizer:
         "%d/%m/%y",  # 01/01/20
         "%d-%m-%y %H:%M:%S",  # 01-01-20 12:30:00
         "%d-%m-%y",  # 01-01-20
-        
         # 4-digit year formats
         "%Y-%m-%d %H:%M:%S",  # 2025-01-01 12:30:00
         "%Y-%m-%d",  # 2025-01-01
@@ -123,7 +121,7 @@ class DatetimeNormalizer:
     ]
 
     @staticmethod
-    def normalize(dt_str: str, timezone_offset_hours: int = 7) -> Optional[str]:
+    def normalize(dt_str: str, timezone_offset_hours: int = 7) -> str | None:
         """
         Cố gắng parse datetime string và trả về chuẩn format.
         Nếu parse thất bại -> return None
@@ -161,7 +159,7 @@ class SafeTypeCaster:
     """
 
     @staticmethod
-    def to_int(val: Any) -> Optional[str]:
+    def to_int(val: Any) -> str | None:
         """
         Safely cast to INT:
         - Strip whitespace
@@ -171,17 +169,17 @@ class SafeTypeCaster:
         """
         if val is None or str(val).strip() == "":
             return None
-        
+
         s = str(val).strip().upper()
         if s in ("NULL", "NAN", "N/A", "NONE", ""):
             return None
-        
+
         # Handle boolean strings (Postgres exports as t/f)
         if s in ("T", "TRUE", "Y", "YES", "1"):
             return "1"
         if s in ("F", "FALSE", "N", "NO", "0"):
             return "0"
-        
+
         # Remove thousand separators & whitespace, keep only digits and -
         try:
             s_clean = re.sub(r"[^\d\-]", "", s)
@@ -193,7 +191,7 @@ class SafeTypeCaster:
             return None
 
     @staticmethod
-    def to_decimal(val: Any, precision: int = 3) -> Optional[str]:
+    def to_decimal(val: Any, precision: int = 3) -> str | None:
         """
         Safely cast to DECIMAL:
         - Strip whitespace
@@ -203,17 +201,17 @@ class SafeTypeCaster:
         """
         if val is None or str(val).strip() == "":
             return None
-        
+
         s = str(val).strip().upper()
         if s in ("NULL", "NAN", "N/A", ""):
             return None
-        
+
         try:
             # Replace comma (European) with dot
             s_clean = s.replace(",", ".")
             # Remove other non-numeric chars (except .)
             s_clean = re.sub(r"[^\d\.\-]", "", s_clean)
-            
+
             float_val = float(s_clean)
             # Format với precision
             formatted = f"{float_val:.{precision}f}"
@@ -222,7 +220,7 @@ class SafeTypeCaster:
             return None
 
     @staticmethod
-    def to_timestamp(val: Any) -> Optional[str]:
+    def to_timestamp(val: Any) -> str | None:
         """
         Safely cast to TIMESTAMP:
         - Dùng DatetimeNormalizer
@@ -230,20 +228,21 @@ class SafeTypeCaster:
         """
         if val is None or str(val).strip() == "":
             return None
-        
+
         val_str = str(val)
         normalized = DatetimeNormalizer.normalize(val_str)
-        
+
         # DEBUG: Log if failed to parse
         if normalized is None and val_str.strip() not in ("", "null", "NULL", "nan", "NAN"):
             import logging
+
             logger = logging.getLogger(__name__)
             logger.warning(f"Failed to parse datetime: '{val_str}' - returning None")
-        
+
         return normalized
 
     @staticmethod
-    def clean_string(val: Any) -> Optional[str]:
+    def clean_string(val: Any) -> str | None:
         """
         Safely clean VARCHAR/TEXT:
         - Strip whitespace
@@ -252,11 +251,11 @@ class SafeTypeCaster:
         """
         if val is None:
             return None
-        
+
         s = str(val).strip()
         if s == "" or s.upper() in ("NULL", "NAN", "N/A", "NONE", "#N/A"):
             return None
-        
+
         return s
 
 
@@ -266,8 +265,8 @@ class SafeTypeCaster:
 
 
 def transform_bccp_orderitem_row(
-    raw_row: Dict[str, Any], encrypto: Optional[CustomerEncryption] = None
-) -> Optional[Dict[str, Any]]:
+    raw_row: dict[str, Any], encrypto: CustomerEncryption | None = None
+) -> dict[str, Any] | None:
     """
     Transform 1 row từ bccp_orderitem CSV.
     Dùng SafeTypeCaster để cast TEXT → INT/DECIMAL/TIMESTAMP an toàn.
@@ -283,34 +282,32 @@ def transform_bccp_orderitem_row(
       complaint554;complaint595;complaint314;complaint594;complaint274;
       complaint614;complaint654;complaint234;complaint174;order_score;
       bccp_update_date
-      
+
     Lưu ý: CSV có item_code_enc, transform sẽ map sang item_code (canonical)
     """
     if not raw_row:
         return None
 
     caster = SafeTypeCaster
-    
+
     return {
         # VARCHAR(100)
         "crm_code_enc": caster.clean_string(raw_row.get("crm_code_enc")),
         "cms_code_enc": caster.clean_string(raw_row.get("cms_code_enc")),
-        "item_code": caster.clean_string(raw_row.get("item_code_enc") or raw_row.get("item_code")),  # Normalized key = item_code (từ item_code_enc)
-        
+        "item_code": caster.clean_string(
+            raw_row.get("item_code_enc") or raw_row.get("item_code")
+        ),  # Normalized key = item_code (từ item_code_enc)
         # VARCHAR
         "service_code": caster.clean_string(raw_row.get("service_code")),
         "country_code": caster.clean_string(raw_row.get("country_code")),
         "region": caster.clean_string(raw_row.get("region")),
-        
         # DECIMAL(10,3)
         "weight_kg": caster.to_decimal(raw_row.get("weight_kg"), 3),
         "order_score": caster.to_decimal(raw_row.get("order_score"), 3),
-        
         # INT (sizes)
         "length_size": caster.to_int(raw_row.get("length_size")),
         "width_size": caster.to_int(raw_row.get("width_size")),
         "height_size": caster.to_int(raw_row.get("height_size")),
-        
         # INT (fees & counts)
         "total_fee": caster.to_int(raw_row.get("total_fee")),
         "is_domestic": caster.to_int(raw_row.get("is_domestic")),
@@ -321,7 +318,6 @@ def transform_bccp_orderitem_row(
         "delay_day": caster.to_int(raw_row.get("delay_day")),
         "done": caster.to_int(raw_row.get("done")),
         "total_complaint": caster.to_int(raw_row.get("total_complaint")),
-        
         # INT (province/district/commune codes)
         "send_province_code": caster.to_int(raw_row.get("send_province_code")),
         "send_district_code": caster.to_int(raw_row.get("send_district_code")),
@@ -329,7 +325,6 @@ def transform_bccp_orderitem_row(
         "rec_province_code": caster.to_int(raw_row.get("rec_province_code")),
         "rec_district_code": caster.to_int(raw_row.get("rec_district_code")),
         "rec_commune_code": caster.to_int(raw_row.get("rec_commune_code")),
-        
         # INT (complaint counts)
         "complaint114": caster.to_int(raw_row.get("complaint114")),
         "complaint115": caster.to_int(raw_row.get("complaint115")),
@@ -345,16 +340,16 @@ def transform_bccp_orderitem_row(
         "complaint654": caster.to_int(raw_row.get("complaint654")),
         "complaint234": caster.to_int(raw_row.get("complaint234")),
         "complaint174": caster.to_int(raw_row.get("complaint174")),
-        
         # TIMESTAMPTZ
         "sending_time": caster.to_timestamp(raw_row.get("sending_time")),
         "ending_time": caster.to_timestamp(raw_row.get("ending_time")),
         "bccp_update_date": caster.to_timestamp(raw_row.get("bccp_update_date")),
     }
 
+
 def transform_cas_customer_row(
-    raw_row: Dict[str, Any], encrypto: Optional[CustomerEncryption] = None
-) -> Optional[Dict[str, Any]]:
+    raw_row: dict[str, Any], encrypto: CustomerEncryption | None = None
+) -> dict[str, Any] | None:
     """
     Transform 1 row từ cas_customer CSV.
     Dùng SafeTypeCaster để cast TEXT → INT/DECIMAL/TIMESTAMP an toàn.
@@ -373,7 +368,7 @@ def transform_cas_customer_row(
         return None
 
     caster = SafeTypeCaster
-    
+
     # Parse report_month to DATE format (YYYY-MM-DD)
     report_month_raw = raw_row.get("report_month")
     report_month_date = None
@@ -382,25 +377,21 @@ def transform_cas_customer_row(
         parsed_date = DatetimeNormalizer.normalize(str(report_month_raw))
         if parsed_date:
             # Extract just the date part (YYYY-MM-DD)
-            report_month_date = parsed_date.split(' ')[0]
-    
+            report_month_date = parsed_date.split(" ")[0]
+
     return {
         # VARCHAR(100)
         "cms_code_enc": caster.clean_string(raw_row.get("cms_code_enc")),
         # DATE
         "report_month": report_month_date,
-        
         # BIGINT
         "item_count": caster.to_int(raw_row.get("item_count")),
         "total_fee": caster.to_int(raw_row.get("total_fee")),
-        
         # DECIMAL(12,3)
         "weight_kg": caster.to_decimal(raw_row.get("weight_kg"), 3),
-        
         # INT (service & delivery counts)
         "intra_province": caster.to_int(raw_row.get("intra_province")),
         "international": caster.to_int(raw_row.get("international")),
-        
         # INT (service types)
         "ser_c": caster.to_int(raw_row.get("ser_c")),
         "ser_e": caster.to_int(raw_row.get("ser_e")),
@@ -410,7 +401,6 @@ def transform_cas_customer_row(
         "ser_u": caster.to_int(raw_row.get("ser_u")),
         "ser_l": caster.to_int(raw_row.get("ser_l")),
         "ser_q": caster.to_int(raw_row.get("ser_q")),
-        
         # INT (issue counts)
         "delay_day": caster.to_int(raw_row.get("delay_day")),
         "delay_count": caster.to_int(raw_row.get("delay_count")),
@@ -420,12 +410,10 @@ def transform_cas_customer_row(
         "lost_order": caster.to_int(raw_row.get("lost_order")),
         "lastday": caster.to_int(raw_row.get("lastday")),
         "noservice": caster.to_int(raw_row.get("noservice")),
-        
         # DECIMAL scores
         "dev_item": caster.to_decimal(raw_row.get("dev_item"), 3),
         "order_score": caster.to_decimal(raw_row.get("order_score"), 3),
         "satisfaction_score": caster.to_decimal(raw_row.get("satisfaction_score"), 3),
-        
         # INT (complaint counts)
         "total_complaint": caster.to_int(raw_row.get("total_complaint")),
         "complaint114": caster.to_int(raw_row.get("complaint114")),
@@ -442,14 +430,14 @@ def transform_cas_customer_row(
         "complaint654": caster.to_int(raw_row.get("complaint654")),
         "complaint234": caster.to_int(raw_row.get("complaint234")),
         "complaint174": caster.to_int(raw_row.get("complaint174")),
-        
         # TIMESTAMPTZ
         "updated_at": caster.to_timestamp(raw_row.get("updated_at")),
     }
 
+
 def transform_cas_info_row(
-    raw_row: Dict[str, Any], encrypto: Optional[CustomerEncryption] = None
-) -> Optional[Dict[str, Any]]:
+    raw_row: dict[str, Any], encrypto: CustomerEncryption | None = None
+) -> dict[str, Any] | None:
     """
     Transform 1 row từ cas_info CSV.
     Dùng SafeTypeCaster để cast TEXT → INT/TIMESTAMP an toàn.
@@ -463,28 +451,28 @@ def transform_cas_info_row(
         return None
 
     caster = SafeTypeCaster
-    
+
     # DEBUG: Log raw datetime values for troubleshooting
     import logging
+
     logger = logging.getLogger(__name__)
-    
+
     customer_update_date_raw = raw_row.get("customer_update_date")
     contract_sig_first_raw = raw_row.get("contract_sig_first")
-    
+
     customer_update_date_ts = caster.to_timestamp(customer_update_date_raw)
     contract_sig_first_ts = caster.to_timestamp(contract_sig_first_raw)
-    
+
     # Log only if transformation fails
     if customer_update_date_raw and not customer_update_date_ts:
         logger.warning(f"[CAS_INFO] Failed to parse customer_update_date: '{customer_update_date_raw}'")
     if contract_sig_first_raw and not contract_sig_first_ts:
         logger.warning(f"[CAS_INFO] Failed to parse contract_sig_first: '{contract_sig_first_raw}'")
-    
+
     return {
         # VARCHAR(100)
         "cms_code_enc": caster.clean_string(raw_row.get("cms_code_enc")),
         "crm_code_enc": caster.clean_string(raw_row.get("crm_code_enc")),
-        
         # BIGINT
         "cus_province": caster.to_int(raw_row.get("cus_province")),
         "contract_service": caster.to_int(raw_row.get("contract_service")),
@@ -493,16 +481,16 @@ def transform_cas_info_row(
         "contract_classify": caster.to_int(raw_row.get("contract_classify")),
         "contract_mgr_org": caster.to_int(raw_row.get("contract_mgr_org")),
         "cus_poscode": caster.to_int(raw_row.get("cus_poscode")),
-        
         # TIMESTAMPTZ
         "customer_update_date": customer_update_date_ts,
         "contract_sig_first": contract_sig_first_ts,
     }
 
+
 def transform_cms_complaint_row(
-    raw_row: Dict[str, Any],
-    encrypto: Optional[CustomerEncryption] = None,
-) -> Optional[Dict[str, Any]]:
+    raw_row: dict[str, Any],
+    encrypto: CustomerEncryption | None = None,
+) -> dict[str, Any] | None:
     """
     Transform 1 dòng cms_complaint.
     Dùng SafeTypeCaster để cast TEXT → INT/TIMESTAMP an toàn.
@@ -520,28 +508,21 @@ def transform_cms_complaint_row(
         return None
 
     caster = SafeTypeCaster
-    
+
     return {
         # VARCHAR(20) - Normalized key = cms_code_enc (từ CSV cms_code)
         "cms_code_enc": caster.clean_string(raw_row.get("cms_code_enc")),
         "item_code": caster.clean_string(raw_row.get("item_code") or raw_row.get("item_code_enc")),
-        
         # TIMESTAMPTZ
         "create_complaint_date": caster.to_timestamp(raw_row.get("create_complaint_date")),
         "exp_complaint_date": caster.to_timestamp(raw_row.get("exp_complaint_date")),
         "close_complaint_date": caster.to_timestamp(raw_row.get("close_complaint_date")),
         "complaint_update_date": caster.to_timestamp(raw_row.get("complaint_update_date")),
         "etl_date": caster.to_timestamp(raw_row.get("etl_date")),
-        
         # INT
         "delay_complaint": caster.to_int(raw_row.get("delay_complaint")),
         "complaint_code": caster.to_int(raw_row.get("complaint_code")),
         "complaint_content_bit": caster.to_int(raw_row.get("complaint_content_bit")),
-        
         # TEXT
         "complaint_content": caster.clean_string(raw_row.get("complaint_content")),
     }
-
-
-
-

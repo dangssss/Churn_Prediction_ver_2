@@ -8,7 +8,6 @@ Convention: 10-Code_design §3.1 — single-responsibility function.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import xgboost as xgb
 
@@ -46,7 +45,10 @@ def train_model(
 
     logger.info(
         "Training XGBoost: %d samples (%d pos / %d neg), %d features",
-        len(ds.y_train), pos_count, neg_count, len(ds.feature_names),
+        len(ds.y_train),
+        pos_count,
+        neg_count,
+        len(ds.feature_names),
     )
 
     dtrain = xgb.DMatrix(

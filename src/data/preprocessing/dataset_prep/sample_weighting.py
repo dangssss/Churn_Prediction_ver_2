@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
@@ -100,6 +99,7 @@ def apply_weights_and_smoothing(
 
 def build_final_dataset(
     active_df: pd.DataFrame,
+    training_history_df: pd.DataFrame,
     eval_ids: set[str],
     feature_names: list[str],
 ) -> DatasetResult:
@@ -116,26 +116,64 @@ def build_final_dataset(
     Returns:
         DatasetResult containing all splits and the fitted scaler.
     """
+    from sklearn.model_selection import train_test_split
+
     feats = [f for f in feature_names if f in active_df.columns]
 
-    train_mask = ~active_df["cms_code_enc"].isin(eval_ids)
-    eval_mask = active_df["cms_code_enc"].isin(eval_ids)
+    # PU Learning Architecture:
+    # 1. Confirmed churners MUST NEVER be used in training (strictly hold-out)
+    is_confirmed = active_df["cms_code_enc"].isin(eval_ids)
 
-    x_train_raw = active_df.loc[train_mask, feats].fillna(0)
-    y_train = active_df.loc[train_mask, "y_smooth"]
-    w_train = active_df.loc[train_mask, "sample_weight"]
+    # 2. Split the unlabeled/pseudo-labeled data (80% Train, 20% Eval) to provide negatives for evaluation
+    unlabeled_df = active_df[~is_confirmed]
+    _, eval_unlabeled_df = train_test_split(
+        unlabeled_df, test_size=0.2, random_state=42, stratify=unlabeled_df["y_label"]
+    )
+    is_eval_unlabeled = active_df.index.isin(eval_unlabeled_df.index)
+
+    # Train: 80% Unlabeled (Pseudo-churn, Reliable-neg, PU)
+    train_mask = ~(is_confirmed | is_eval_unlabeled)
+    # Eval: 100% Confirmed + 20% Unlabeled (as assumed negatives)
+    eval_mask = is_confirmed | is_eval_unlabeled
+
+    x_train_active = active_df.loc[train_mask, feats].fillna(0)
+    y_train_active = active_df.loc[train_mask, "y_smooth"]
+    w_train_active = active_df.loc[train_mask, "sample_weight"]
+
+    # Historical data: y=1 if confirmed OR y_raw == 1
+    if not training_history_df.empty:
+        is_hist_confirmed = training_history_df["cms_code_enc"].isin(eval_ids)
+        y_train_hist = (is_hist_confirmed | (training_history_df["y_raw"] == 1)).astype(float)
+        w_train_hist = pd.Series(1.0, index=training_history_df.index)
+
+        # Ensure only available features are used and missing filled with 0
+        missing_feats = [f for f in feats if f not in training_history_df.columns]
+        for f in missing_feats:
+            training_history_df[f] = 0.0
+
+        x_train_hist = training_history_df[feats].fillna(0)
+
+        x_train_raw = pd.concat([x_train_active, x_train_hist], ignore_index=True)
+        y_train = pd.concat([y_train_active, y_train_hist], ignore_index=True)
+        w_train = pd.concat([w_train_active, w_train_hist], ignore_index=True)
+
+        logger.info(
+            "Merged %d historical training samples (true labels: sum(y)=%d) into Training Set",
+            len(x_train_hist),
+            int(y_train_hist.sum()),
+        )
+    else:
+        x_train_raw = x_train_active
+        y_train = y_train_active
+        w_train = w_train_active
 
     x_eval_raw = active_df.loc[eval_mask, feats].fillna(0)
     y_eval = active_df.loc[eval_mask, "y_label"]  # No smoothing for GT
 
     # Fit scaler on train set ONLY (prevent data leakage)
     scaler = StandardScaler()
-    x_train = pd.DataFrame(
-        scaler.fit_transform(x_train_raw), columns=feats, index=x_train_raw.index
-    )
-    x_eval = pd.DataFrame(
-        scaler.transform(x_eval_raw), columns=feats, index=x_eval_raw.index
-    )
+    x_train = pd.DataFrame(scaler.fit_transform(x_train_raw), columns=feats, index=x_train_raw.index)
+    x_eval = pd.DataFrame(scaler.transform(x_eval_raw), columns=feats, index=x_eval_raw.index)
     x_predict = pd.DataFrame(
         scaler.transform(active_df[feats].fillna(0)),
         columns=feats,

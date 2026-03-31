@@ -27,9 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Regex to validate feature table names — prevents SQL injection
 # Format: data_window.cus_feature_{K}m_{YYMM}_{YYMM}
-_TABLE_NAME_PATTERN = re.compile(
-    r"^data_window\.cus_feature_\d+m_\d{4}_\d{4}$"
-)
+_TABLE_NAME_PATTERN = re.compile(r"^data_window\.cus_feature_\d+m_\d{4}_\d{4}$")
 
 
 def get_window_table_name(window_size: int, end_month: pd.Timestamp) -> str:
@@ -43,10 +41,7 @@ def get_window_table_name(window_size: int, end_month: pd.Timestamp) -> str:
         Fully qualified table name in ``data_window`` schema.
     """
     start_month = end_month - pd.DateOffset(months=window_size - 1)
-    return (
-        f"data_window.cus_feature_{window_size}m_"
-        f"{start_month.strftime('%y%m')}_{end_month.strftime('%y%m')}"
-    )
+    return f"data_window.cus_feature_{window_size}m_{start_month.strftime('%y%m')}_{end_month.strftime('%y%m')}"
 
 
 def load_window_features(
@@ -69,8 +64,7 @@ def load_window_features(
     # Validate table name format to prevent SQL injection
     if not _TABLE_NAME_PATTERN.match(table_name):
         raise ValueError(
-            f"Invalid table name format: {table_name}. "
-            f"Expected: data_window.cus_feature_{{K}}m_{{YYMM}}_{{YYMM}}"
+            f"Invalid table name format: {table_name}. Expected: data_window.cus_feature_{{K}}m_{{YYMM}}_{{YYMM}}"
         )
 
     try:
@@ -192,9 +186,7 @@ def build_training_windows(
         )
         feat_df["item_in_horizon"] = feat_df["item_in_horizon"].fillna(0)
         feat_df["rev_in_horizon"] = feat_df["rev_in_horizon"].fillna(0)
-        feat_df["y_raw"] = (
-            (feat_df["item_in_horizon"] == 0) & (feat_df["rev_in_horizon"] == 0)
-        ).astype(int)
+        feat_df["y_raw"] = ((feat_df["item_in_horizon"] == 0) & (feat_df["rev_in_horizon"] == 0)).astype(int)
 
         all_rows.append(feat_df)
 

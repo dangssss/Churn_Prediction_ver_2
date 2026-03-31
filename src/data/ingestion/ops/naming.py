@@ -1,7 +1,7 @@
 # Data_pull/ops/naming.py
+import re
 from datetime import date
 from pathlib import Path
-import re
 
 from data.ingestion.resources.fs import ZIP_RE  # đã định nghĩa ở resources/fs.py
 
@@ -17,10 +17,12 @@ CSV_SNAPSHOT_RE = re.compile(
     re.IGNORECASE,
 )
 
+
 def _mmdd_to_date(mmdd: str, year: int) -> date:
     mm = int(mmdd[:2])
     dd = int(mmdd[2:])
     return date(year, mm, dd)
+
 
 def _parse_yymm(yymm: str):
     """
@@ -32,6 +34,7 @@ def _parse_yymm(yymm: str):
     assert 1 <= mm <= 12, f"MM không hợp lệ trong yymm={yymm}"
     year = 2000 + yy
     return year, mm
+
 
 def parse_zip_and_decide_names(zip_path: Path) -> dict:
     m = ZIP_RE.fullmatch(zip_path.name)
@@ -73,14 +76,14 @@ def parse_zip_and_decide_names(zip_path: Path) -> dict:
         table_name = base_update
         # Note: month_folder dùng string gốc để tạo folder (giữ nguyên ddmmyy cho dễ track)
         month_folder = f"{base_update}_snapshot_{update_ddmmyy}"
-        
+
         # Parse ddmmyy -> date (Format: DDMMYY = Ngày-Tháng-Năm)
         # VD: 250322 = DD=25 (ngày 25) + MM=03 (tháng 3) + YY=22 (năm 2022)
-        dd = int(update_ddmmyy[0:2])   # 2 ký tự đầu = ngày
-        mm = int(update_ddmmyy[2:4])   # 2 ký tự giữa = tháng
-        yy = int(update_ddmmyy[4:6])   # 2 ký tự cuối = năm
-        yyyy = 2000 + yy        # Giả định 20xx (2000-2099)
-        
+        dd = int(update_ddmmyy[0:2])  # 2 ký tự đầu = ngày
+        mm = int(update_ddmmyy[2:4])  # 2 ký tự giữa = tháng
+        yy = int(update_ddmmyy[4:6])  # 2 ký tự cuối = năm
+        yyyy = 2000 + yy  # Giả định 20xx (2000-2099)
+
         period_key = f"{yyyy:04d}{mm:02d}{dd:02d}"  # YYYYMMDD: 20220325 (để sort đúng)
 
         return {
@@ -92,7 +95,7 @@ def parse_zip_and_decide_names(zip_path: Path) -> dict:
             "csv_files": [],  # Sẽ được populate lại sau khi unzip
             "mode": "snapshot",  # Dạng snapshot (truncate & reload)
         }
-    
+
     raise ValueError(f"Không thể parse ZIP: {zip_path.name}")
 
 
@@ -103,7 +106,7 @@ def order_csvs_chronologically(csv_paths, expect_base: str, expect_year: int, ex
       - base phải khớp
       - start_mmdd & end_mmdd phải thuộc đúng (expect_year, expect_month)
     """
-    keyed, tail = [], []    
+    keyed, tail = [], []
     for p in csv_paths:
         m = CSV_RE.fullmatch(p.name)
         if not m or m["base"].lower() != expect_base.lower():

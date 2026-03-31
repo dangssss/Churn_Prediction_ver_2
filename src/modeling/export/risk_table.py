@@ -7,7 +7,6 @@ Convention: 08-Security §3 — no hardcoded credentials.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 
 import pandas as pd
 from sqlalchemy import text
@@ -81,27 +80,27 @@ def insert_predictions(
     fqn = f"{RISK_SCHEMA}.{RISK_TABLE}"
 
     with engine.begin() as conn:
-        if clear_previous and window_end is not None:
-            conn.execute(
-                text(f"DELETE FROM {fqn} WHERE window_end = :w"),
-                {"w": window_end},
-            )
-            logger.info("Cleared previous predictions for window_end=%s", window_end)
+        if clear_previous:
+            # Business Rule: Truncate the entire table so every run yields a fresh 10% list
+            conn.execute(text(f"TRUNCATE TABLE {fqn}"))
+            logger.info("TRUNCATED previous predictions from %s", fqn)
 
         rows = []
         for _, row in flagged.iterrows():
-            rows.append({
-                "cms_code_enc": str(row.get("cms_code_enc", "")),
-                "churn_probability": float(row["churn_probability"]),
-                "churn_flag": 1,
-                "threshold_used": float(threshold),
-                "reason_1": row.get("reason_1"),
-                "reason_2": row.get("reason_2"),
-                "reason_3": row.get("reason_3"),
-                "window_end": window_end,
-                "w_star": w_star,
-                "horizon": horizon,
-            })
+            rows.append(
+                {
+                    "cms_code_enc": str(row.get("cms_code_enc", "")),
+                    "churn_probability": float(row["churn_probability"]),
+                    "churn_flag": 1,
+                    "threshold_used": float(threshold),
+                    "reason_1": row.get("reason_1"),
+                    "reason_2": row.get("reason_2"),
+                    "reason_3": row.get("reason_3"),
+                    "window_end": window_end,
+                    "w_star": w_star,
+                    "horizon": horizon,
+                }
+            )
 
         if rows:
             insert_sql = text(f"""

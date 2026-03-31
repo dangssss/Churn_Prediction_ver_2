@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+
 def prf1_at_threshold(y_true: np.ndarray, y_prob: np.ndarray, thr: float):
     y_true = y_true.astype(int)
     y_pred = (y_prob >= thr).astype(int)
@@ -11,9 +12,10 @@ def prf1_at_threshold(y_true: np.ndarray, y_prob: np.ndarray, thr: float):
     fn = int(((y_true == 1) & (y_pred == 0)).sum())
 
     prec = tp / (tp + fp + 1e-9)
-    rec  = tp / (tp + fn + 1e-9)
-    f1   = 2 * prec * rec / (prec + rec + 1e-9)
+    rec = tp / (tp + fn + 1e-9)
+    f1 = 2 * prec * rec / (prec + rec + 1e-9)
     return float(prec), float(rec), float(f1)
+
 
 def average_precision_np(y_true: np.ndarray, y_score: np.ndarray) -> float:
     """Average Precision (AP) = area under precision-recall curve (step-wise)."""
@@ -25,7 +27,7 @@ def average_precision_np(y_true: np.ndarray, y_score: np.ndarray) -> float:
     fp = np.cumsum(y_true_sorted == 0)
 
     prec = tp / (tp + fp + 1e-9)
-    rec  = tp / (tp[-1] + 1e-9)  # tp[-1] = total positives
+    rec = tp / (tp[-1] + 1e-9)  # tp[-1] = total positives
 
     ap = 0.0
     prev_rec = 0.0
@@ -34,6 +36,7 @@ def average_precision_np(y_true: np.ndarray, y_score: np.ndarray) -> float:
             ap += (rec[i] - prev_rec) * prec[i]
             prev_rec = rec[i]
     return float(ap)
+
 
 def best_threshold_by_f1_np(y_true: np.ndarray, y_prob: np.ndarray, n_grid: int = 400):
     lo, hi = float(np.min(y_prob)), float(np.max(y_prob))

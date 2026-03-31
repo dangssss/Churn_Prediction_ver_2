@@ -1,10 +1,9 @@
 # resources/fs.py
+import re
 from dataclasses import dataclass
 from pathlib import Path
-import re
-from typing import List, Union
 
-# Regex tên ZIP: 
+# Regex tên ZIP:
 #   1) <base>_yymm.zip (vd: bccp_orderitem_2501.zip) - monthly
 #      Format: yymm = YY (năm 2 chữ số) + MM (tháng)
 #      VD: 2501 = tháng 01 năm 2025
@@ -20,7 +19,6 @@ ZIP_RE = re.compile(
 )
 
 
-
 @dataclass
 class FSConfig:
     """
@@ -31,7 +29,7 @@ class FSConfig:
     - fail_dir    : nơi move file ZIP/CSV bị lỗi
     """
 
-    from data.ingestion.config.paths import INCOMING_DATA_DIR, SAVED_DATA_DIR, FAIL_DATA_DIR
+    from data.ingestion.config.paths import FAIL_DATA_DIR, INCOMING_DATA_DIR, SAVED_DATA_DIR
 
     incoming_dir: Path = INCOMING_DATA_DIR
     saved_dir: Path = SAVED_DATA_DIR
@@ -43,7 +41,6 @@ class FSConfig:
         self.incoming_dir.mkdir(parents=True, exist_ok=True)
         self.saved_dir.mkdir(parents=True, exist_ok=True)
         self.fail_dir.mkdir(parents=True, exist_ok=True)
-
 
     # TODO: NAMNT Check lai
     @classmethod
@@ -59,7 +56,7 @@ class FSConfig:
         return cfg
 
 
-def list_zip_files(src: Union[Path, FSConfig]) -> List[Path]:
+def list_zip_files(src: Path | FSConfig) -> list[Path]:
     """
     Trả về list các file ZIP trong incoming_dir, lọc theo pattern <base>_yymm.zip.
 
@@ -71,7 +68,4 @@ def list_zip_files(src: Union[Path, FSConfig]) -> List[Path]:
     else:
         incoming_dir = src
 
-    return [
-        p for p in sorted(incoming_dir.glob("*.zip"))
-        if ZIP_RE.fullmatch(p.name)
-    ]
+    return [p for p in sorted(incoming_dir.glob("*.zip")) if ZIP_RE.fullmatch(p.name)]

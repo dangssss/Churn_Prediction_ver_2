@@ -120,10 +120,7 @@ def load_eval_ids(
     cskh_df = pd.read_csv(path)
 
     if "cms_code_enc" not in cskh_df.columns:
-        raise ValueError(
-            f"CSKH file {path} must contain 'cms_code_enc' column. "
-            f"Found: {list(cskh_df.columns)}"
-        )
+        raise ValueError(f"CSKH file {path} must contain 'cms_code_enc' column. Found: {list(cskh_df.columns)}")
 
     confirmed_ids = set(cskh_df["cms_code_enc"].astype(str).str.strip())
     in_scope = confirmed_ids & working_ids

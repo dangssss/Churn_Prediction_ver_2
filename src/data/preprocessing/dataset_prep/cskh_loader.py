@@ -30,9 +30,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Regex: Roi_bo_MM_YY with optional .csv/.xlsx extension
-_CSKH_FILENAME_RE = re.compile(
-    r"^Roi_bo_(\d{2})_(\d{2})(?:\.(?:csv|xlsx))?$", re.IGNORECASE
-)
+_CSKH_FILENAME_RE = re.compile(r"^Roi_bo_(\d{2})_(\d{2})(?:\.(?:csv|xlsx))?$", re.IGNORECASE)
 
 CSKH_SCHEMA = "cskh"
 CSKH_TABLE = "confirmed_churners"
@@ -99,8 +97,7 @@ def load_cskh_file_to_db(
     parsed = parse_cskh_filename(file_path.name)
     if parsed is None:
         raise ValueError(
-            f"Invalid CSKH filename: {file_path.name}. "
-            f"Expected: Roi_bo_MM_YY.csv/.xlsx (e.g. Roi_bo_01_25.xlsx)"
+            f"Invalid CSKH filename: {file_path.name}. Expected: Roi_bo_MM_YY.csv/.xlsx (e.g. Roi_bo_01_25.xlsx)"
         )
 
     month, year = parsed
@@ -109,17 +106,16 @@ def load_cskh_file_to_db(
     if skip_if_exists:
         with engine.connect() as conn:
             result = conn.execute(
-                text(
-                    f"SELECT COUNT(*) FROM {CSKH_SCHEMA}.{CSKH_TABLE} "
-                    f"WHERE file_month = :m AND file_year = :y"
-                ),
+                text(f"SELECT COUNT(*) FROM {CSKH_SCHEMA}.{CSKH_TABLE} WHERE file_month = :m AND file_year = :y"),
                 {"m": month, "y": year},
             )
             count = result.scalar()
             if count and count > 0:
                 logger.info(
                     "CSKH %02d/%02d already loaded (%d rows) — skipping",
-                    month, year, count,
+                    month,
+                    year,
+                    count,
                 )
                 return 0
 
@@ -134,8 +130,7 @@ def load_cskh_file_to_db(
 
     if "cms_code_enc" not in df.columns:
         raise ValueError(
-            f"CSKH file {file_path.name} must contain 'cms_code_enc' column. "
-            f"Found columns: {list(df.columns)}"
+            f"CSKH file {file_path.name} must contain 'cms_code_enc' column. Found columns: {list(df.columns)}"
         )
 
     ids = df["cms_code_enc"].astype(str).str.strip().unique()
@@ -149,17 +144,17 @@ def load_cskh_file_to_db(
         ON CONFLICT (cms_code_enc, file_month, file_year) DO NOTHING
     """)
 
-    rows = [
-        {"cms": cms_id, "m": month, "y": year, "src": file_path.name}
-        for cms_id in ids
-    ]
+    rows = [{"cms": cms_id, "m": month, "y": year, "src": file_path.name} for cms_id in ids]
 
     with engine.begin() as conn:
         conn.execute(insert_sql, rows)
 
     logger.info(
         "CSKH loaded: %s -> %d IDs for %02d/%02d",
-        file_path.name, len(rows), month, year,
+        file_path.name,
+        len(rows),
+        month,
+        year,
     )
     return len(rows)
 
@@ -185,10 +180,7 @@ def scan_and_load_cskh_dir(
 
     results: dict[str, int] = {}
     # Collect both CSV and XLSX files
-    cskh_files = sorted(
-        list(cskh_dir.glob("Roi_bo_*.csv"))
-        + list(cskh_dir.glob("Roi_bo_*.xlsx"))
-    )
+    cskh_files = sorted(list(cskh_dir.glob("Roi_bo_*.csv")) + list(cskh_dir.glob("Roi_bo_*.xlsx")))
 
     if not cskh_files:
         logger.info("No CSKH files found in %s", cskh_dir)
@@ -241,6 +233,7 @@ def load_eval_ids_from_db(
 
     logger.info(
         "CSKH from DB: %d total, %d in scope",
-        len(all_ids), len(in_scope),
+        len(all_ids),
+        len(in_scope),
     )
     return in_scope

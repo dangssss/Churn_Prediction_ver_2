@@ -9,7 +9,6 @@ Convention: 08-Security §3.2 — no hardcoded credentials.
 
 from __future__ import annotations
 
-import os
 from dotenv import load_dotenv
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -36,6 +35,7 @@ def get_engine(
     """
     if database_url:
         from sqlalchemy import create_engine
+
         return create_engine(database_url, pool_pre_ping=pool_pre_ping)
 
     cfg = PostgresConfig.from_env()
@@ -45,6 +45,4 @@ def get_engine(
 def smoke_test(engine: Engine) -> tuple:
     """Return (current_database, current_user, version)."""
     with engine.connect() as conn:
-        return conn.execute(
-            text("SELECT current_database(), current_user, version()")
-        ).fetchone()
+        return conn.execute(text("SELECT current_database(), current_user, version()")).fetchone()

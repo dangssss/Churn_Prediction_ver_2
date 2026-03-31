@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import logging
 
-import pandas as pd
-
 from data.preprocessing.dataset_prep.sample_weighting import DatasetResult
 
 logger = logging.getLogger(__name__)
@@ -34,11 +32,7 @@ def run_sanity_checks(result: DatasetResult, eval_ids: set[str]) -> bool:
     checks_passed = True
 
     # 1. No overlap between train and eval
-    train_ids = set(
-        result.active_df.loc[
-            ~result.active_df["cms_code_enc"].isin(eval_ids), "cms_code_enc"
-        ]
-    )
+    train_ids = set(result.active_df.loc[~result.active_df["cms_code_enc"].isin(eval_ids), "cms_code_enc"])
     overlap = train_ids & eval_ids
     _check(
         len(overlap) == 0,
@@ -84,8 +78,7 @@ def run_sanity_checks(result: DatasetResult, eval_ids: set[str]) -> bool:
     eval_size_ok = len(result.x_eval) == len(eval_ids) or len(eval_ids) == 0
     _check(
         eval_size_ok,
-        f"[6] Eval set size: {len(result.x_eval)} "
-        f"(expected {len(eval_ids)})",
+        f"[6] Eval set size: {len(result.x_eval)} (expected {len(eval_ids)})",
     )
 
     if checks_passed:

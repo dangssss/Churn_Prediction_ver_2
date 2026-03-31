@@ -58,11 +58,7 @@ def detect_t_obs(
         tbl_df = pd.read_sql(sql, conn)
 
     pattern = re.compile(r"bccp_orderitem_(\d{4})$")
-    yymm_list = [
-        m.group(1)
-        for t in tbl_df["tablename"]
-        if (m := pattern.match(t))
-    ]
+    yymm_list = [m.group(1) for t in tbl_df["tablename"] if (m := pattern.match(t))]
 
     if yymm_list:
         latest = max(yymm_list)
@@ -75,10 +71,7 @@ def detect_t_obs(
         return t_obs
 
     # Fallback: use cas_customer max report_month
-    sql_fallback = text(
-        "SELECT MAX(date_trunc('month', report_month))::date AS mx "
-        "FROM public.cas_customer"
-    )
+    sql_fallback = text("SELECT MAX(date_trunc('month', report_month))::date AS mx FROM public.cas_customer")
     with engine.connect() as conn:
         result = pd.read_sql(sql_fallback, conn)
     t_obs = pd.Timestamp(result.iloc[0, 0])

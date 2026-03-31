@@ -16,7 +16,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Optional
 
 
 @dataclass
@@ -58,7 +57,7 @@ class DatasetPipelineConfig:
     w_min: int = 3
     min_train_windows: int = 5
     data_start: date = field(default_factory=lambda: date(2025, 1, 1))
-    t_obs_override: Optional[date] = None
+    t_obs_override: date | None = None
 
     # ── Scope filter ──────────────────────────────────────
     min_lifetime_orders: int = 3
@@ -73,7 +72,7 @@ class DatasetPipelineConfig:
 
     # ── EWMA & similarity ─────────────────────────────────
     alpha_ewma: float = 0.3
-    sim_threshold: float = 0.68
+    sim_threshold: float = 0.80
     sigma_reg: float = 0.01
 
     # ── Label smoothing ───────────────────────────────────
@@ -91,8 +90,8 @@ class DatasetPipelineConfig:
     min_prototype_samples: int = 10
 
     # ── CSKH file ─────────────────────────────────────────
-    cskh_file_path: Optional[Path] = None
-    cskh_dir: Optional[Path] = None
+    cskh_file_path: Path | None = None
+    cskh_dir: Path | None = None
 
     # ── Fallback behavior (khi không có file CSKH) ────────
     allow_prototype_fallback: bool = True
@@ -106,27 +105,18 @@ class DatasetPipelineConfig:
             ValueError: If any parameter is invalid.
         """
         if self.horizon_months < 1:
-            raise ValueError(
-                f"horizon_months must be >= 1, got {self.horizon_months}"
-            )
+            raise ValueError(f"horizon_months must be >= 1, got {self.horizon_months}")
         if self.w_min < 2:
             raise ValueError(f"w_min must be >= 2, got {self.w_min}")
         if self.min_train_windows < 2:
-            raise ValueError(
-                f"min_train_windows must be >= 2, got {self.min_train_windows}"
-            )
+            raise ValueError(f"min_train_windows must be >= 2, got {self.min_train_windows}")
         if not (0 < self.alpha_ewma < 1):
-            raise ValueError(
-                f"alpha_ewma must be in (0, 1), got {self.alpha_ewma}"
-            )
+            raise ValueError(f"alpha_ewma must be in (0, 1), got {self.alpha_ewma}")
         if not (0 <= self.sim_threshold <= 1):
-            raise ValueError(
-                f"sim_threshold must be in [0, 1], got {self.sim_threshold}"
-            )
+            raise ValueError(f"sim_threshold must be in [0, 1], got {self.sim_threshold}")
         if self.recency_active >= self.recency_at_risk:
             raise ValueError(
-                f"recency_active ({self.recency_active}) must be "
-                f"< recency_at_risk ({self.recency_at_risk})"
+                f"recency_active ({self.recency_active}) must be < recency_at_risk ({self.recency_at_risk})"
             )
 
     def to_safe_dict(self) -> dict:

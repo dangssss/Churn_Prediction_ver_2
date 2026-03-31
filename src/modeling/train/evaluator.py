@@ -25,23 +25,23 @@ from data.preprocessing.dataset_prep.sample_weighting import DatasetResult
 logger = logging.getLogger(__name__)
 
 
-def best_threshold_by_recall_priority(
+def best_threshold_by_fbeta(
     y_true: np.ndarray,
     y_prob: np.ndarray,
-    beta: float = 2.0,
+    beta: float = 0.5,
 ) -> float:
-    """Find the probability threshold that maximizes F-beta score (Favoring Recall).
+    """Find the probability threshold that maximizes F-beta score.
 
     Args:
         y_true: Ground truth binary labels.
         y_prob: Predicted probabilities.
-        beta: Beta value for F-score (beta > 1 favors recall, default 2.0).
+        beta: Beta value for F-score (beta < 1 favors precision, default 0.5).
 
     Returns:
         Optimal threshold value.
     """
     prec, rec, thresholds = precision_recall_curve(y_true, y_prob)
-    beta_sq = beta ** 2
+    beta_sq = beta**2
     f_scores = (1 + beta_sq) * (prec[:-1] * rec[:-1]) / ((beta_sq * prec[:-1]) + rec[:-1] + 1e-9)
     if len(f_scores) == 0:
         return 0.5
@@ -66,7 +66,7 @@ def evaluate_model(
     y_prob = model.predict(deval)
     y_true = ds.y_eval.values.astype(int)
 
-    threshold = best_threshold_by_recall_priority(y_true, y_prob, beta=2.0)
+    threshold = best_threshold_by_fbeta(y_true, y_prob, beta=0.5)
     y_pred = (y_prob >= threshold).astype(int)
 
     n_pos = int((y_true == 1).sum())
@@ -74,7 +74,7 @@ def evaluate_model(
 
     metrics = {
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-        "f2": float(fbeta_score(y_true, y_pred, beta=2.0, zero_division=0)),
+        "f05": float(fbeta_score(y_true, y_pred, beta=0.5, zero_division=0)),
         "precision": float(precision_score(y_true, y_pred, zero_division=0)),
         "recall": float(recall_score(y_true, y_pred, zero_division=0)),
         "pr_auc": float(average_precision_score(y_true, y_prob)),
@@ -86,8 +86,12 @@ def evaluate_model(
     }
 
     logger.info(
-        "Eval metrics: F1=%.4f, F2(Recall-focus)=%.4f, PR-AUC=%.4f, threshold=%.4f (%d pos / %d neg)",
-        metrics["f1"], metrics["f2"], metrics["pr_auc"], metrics["threshold"],
-        n_pos, n_neg,
+        "Eval metrics: F1=%.4f, F0.5(Precision-focus)=%.4f, PR-AUC=%.4f, threshold=%.4f (%d pos / %d neg)",
+        metrics["f1"],
+        metrics["f05"],
+        metrics["pr_auc"],
+        metrics["threshold"],
+        n_pos,
+        n_neg,
     )
     return metrics

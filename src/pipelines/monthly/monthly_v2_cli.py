@@ -32,12 +32,13 @@ def main() -> int:
     """
     try:
         from dotenv import load_dotenv
+
         load_dotenv()
 
         from config.db_config import PostgresConfig
-        from shared.db import get_engine
-        from pipelines.monthly.monthly_v2 import run_monthly_v2
         from data.preprocessing.dataset_prep.pipeline_config import DatasetPipelineConfig
+        from pipelines.monthly.monthly_v2 import run_monthly_v2
+        from shared.db import get_engine
 
         logger.info("=" * 70)
         logger.info("Monthly Churn Pipeline v2 — Starting")
@@ -75,10 +76,7 @@ def main() -> int:
         logger.info("Pipeline result: %s", summary.get("status", "unknown"))
 
         # Log summary as JSON for Airflow log parsing
-        safe_summary = {
-            k: v for k, v in summary.items()
-            if isinstance(v, (str, int, float, bool, type(None)))
-        }
+        safe_summary = {k: v for k, v in summary.items() if isinstance(v, (str, int, float, bool, type(None)))}
         logger.info("Summary: %s", json.dumps(safe_summary, default=str))
 
         if summary.get("status") == "success":

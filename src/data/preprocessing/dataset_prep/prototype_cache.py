@@ -17,7 +17,6 @@ import logging
 import pickle
 from typing import TYPE_CHECKING, Any
 
-import numpy as np
 from sqlalchemy import text
 
 if TYPE_CHECKING:
@@ -98,20 +97,25 @@ def save_prototype(
     """)
 
     with engine.begin() as conn:
-        conn.execute(upsert_sql, {
-            "run_month": run_month,
-            "horizon": horizon,
-            "n_confirmed": prototype["n_confirmed"],
-            "n_features": len(prototype["feature_names"]),
-            "mu": mu_bytes,
-            "sigma_inv": sigma_inv_bytes,
-            "sigma2": float(prototype["sigma2"]),
-            "feature_names": feature_names_json,
-        })
+        conn.execute(
+            upsert_sql,
+            {
+                "run_month": run_month,
+                "horizon": horizon,
+                "n_confirmed": prototype["n_confirmed"],
+                "n_features": len(prototype["feature_names"]),
+                "mu": mu_bytes,
+                "sigma_inv": sigma_inv_bytes,
+                "sigma2": float(prototype["sigma2"]),
+                "feature_names": feature_names_json,
+            },
+        )
 
     logger.info(
         "Prototype cached: run_month=%d, horizon=%d, n_confirmed=%d, n_features=%d",
-        run_month, horizon, prototype["n_confirmed"],
+        run_month,
+        horizon,
+        prototype["n_confirmed"],
         len(prototype["feature_names"]),
     )
 
@@ -164,9 +168,11 @@ def load_latest_prototype(
         age = _months_diff(current_month, cached_run_month)
         if age > max_age_months:
             logger.warning(
-                "Cached prototype too old: %d months (max=%d). "
-                "run_month=%d, current=%d",
-                age, max_age_months, cached_run_month, current_month,
+                "Cached prototype too old: %d months (max=%d). run_month=%d, current=%d",
+                age,
+                max_age_months,
+                cached_run_month,
+                current_month,
             )
             return None
 
@@ -185,9 +191,11 @@ def load_latest_prototype(
     }
 
     logger.info(
-        "Loaded cached prototype: run_month=%d, n_confirmed=%d, "
-        "n_features=%d, cached_at=%s",
-        cached_run_month, row[2], row[3], row[8],
+        "Loaded cached prototype: run_month=%d, n_confirmed=%d, n_features=%d, cached_at=%s",
+        cached_run_month,
+        row[2],
+        row[3],
+        row[8],
     )
     return prototype
 

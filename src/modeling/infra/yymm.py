@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 def shift_yymm(yymm: str | int, delta_months: int) -> str:
     """Shift YYMM by delta months. Example: '2509' -> '2510' or 2509 -> '2510'."""
     yymm_str = str(yymm).zfill(4)  # Convert to string and pad with zeros if needed

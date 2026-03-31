@@ -1,10 +1,9 @@
 # Data_pull/schedules/daily_zip_scan_schedule.py
 
-import logging
 from apscheduler.schedulers.blocking import BlockingScheduler
 
-from pipelines.ingestion.sensors.incoming_zip_sensor import run_once_scan
 from data.ingestion.logging_config import get_logger
+from pipelines.ingestion.sensors.incoming_zip_sensor import run_once_scan
 
 logger = get_logger(__name__)
 

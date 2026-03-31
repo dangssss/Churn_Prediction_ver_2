@@ -63,9 +63,7 @@ def build_leading_prototype(
     proto_df = load_window_features(engine, window_size, prototype_end)
 
     if proto_df.empty:
-        logger.warning(
-            "Cannot load window at %s for prototype", prototype_end.date()
-        )
+        logger.warning("Cannot load window at %s for prototype", prototype_end.date())
         return {}
 
     proto_df = compute_ewma(proto_df, window_size, alpha_ewma)
@@ -80,7 +78,8 @@ def build_leading_prototype(
             "Prototype requires at least %d confirmed churners, "
             "but only found %d. Returning empty prototype — "
             "caller should handle fallback.",
-            min_prototype_samples, len(x_proto),
+            min_prototype_samples,
+            len(x_proto),
         )
         return {}
 
@@ -141,7 +140,11 @@ def compute_similarity(
 
     # Vectorized Mahalanobis distance
     diffs = x - mu  # (N, D)
-    mahal_sq = np.sum(diffs @ s_inv * diffs, axis=1)
-    scores = np.exp(-mahal_sq / (2 * sig2))
+    mahal_sq = np.maximum(0.0, np.sum(diffs @ s_inv * diffs, axis=1))
+
+    # Secure computation to avoid exp overflow/underflow warnings
+    exponent = -mahal_sq / (2 * max(sig2, 1e-9))
+    exponent = np.clip(exponent, a_min=-700, a_max=0)
+    scores = np.exp(exponent)
 
     return pd.Series(scores, index=df.index)

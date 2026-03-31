@@ -1,15 +1,14 @@
 # ops/unzip_and_discover.py
-from pathlib import Path
-import logging
 import shutil
 import zipfile
+from pathlib import Path
 
-from data.ingestion.resources import FSConfig, ZIP_RE, list_zip_files
-from data.ingestion.ops.naming import (
-    parse_zip_and_decide_names,
-    order_csvs_chronologically,
-)
 from data.ingestion.logging_config import get_logger
+from data.ingestion.ops.naming import (
+    order_csvs_chronologically,
+    parse_zip_and_decide_names,
+)
+from data.ingestion.resources import FSConfig
 
 logger = get_logger(__name__)
 
@@ -92,10 +91,8 @@ def unzip_and_discover(zip_path: Path, fs_cfg: FSConfig) -> dict:
         raise RuntimeError(f"Failed to unzip: {zip_path.name}") from e
 
     # 5) Tìm CSV đệ quy trong extract_dir
-    csv_unsorted = sorted(
-        [p for p in extract_dir.rglob("*") if p.is_file() and p.suffix.lower() == ".csv"]
-    )
-    
+    csv_unsorted = sorted([p for p in extract_dir.rglob("*") if p.is_file() and p.suffix.lower() == ".csv"])
+
     if not csv_unsorted:
         logger.warning(f"No CSV files found after unzipping {table_name}")
         return {

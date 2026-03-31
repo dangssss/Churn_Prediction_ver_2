@@ -15,7 +15,6 @@ import logging
 import logging.handlers
 from pathlib import Path
 
-
 _CONFIGURED = False
 
 
@@ -66,10 +65,7 @@ def configure_logging(
 
     # ── Formatters ─────────────────────────────────────────
     file_formatter = logging.Formatter(
-        fmt=(
-            "%(asctime)s | %(levelname)-8s | %(name)-30s "
-            "| %(funcName)-20s | %(message)s"
-        ),
+        fmt=("%(asctime)s | %(levelname)-8s | %(name)-30s | %(funcName)-20s | %(message)s"),
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     console_formatter = logging.Formatter(

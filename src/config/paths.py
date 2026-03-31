@@ -113,7 +113,5 @@ def _get_required_path(env_name: str) -> Path:
     """
     value = os.getenv(env_name)
     if not value:
-        raise EnvironmentError(
-            f"Missing required environment variable: {env_name}"
-        )
+        raise OSError(f"Missing required environment variable: {env_name}")
     return Path(value)

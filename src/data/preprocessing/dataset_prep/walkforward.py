@@ -54,9 +54,7 @@ def walkforward_auc(
     Returns:
         Dict with keys: W, auc (mean), n_folds, auc_per_fold.
     """
-    training_data = build_training_windows(
-        engine, window_size, all_months, horizon_months, alpha_ewma
-    )
+    training_data = build_training_windows(engine, window_size, all_months, horizon_months, alpha_ewma)
 
     if training_data.empty:
         return {"W": window_size, "auc": None, "n_folds": 0}
@@ -80,9 +78,7 @@ def walkforward_auc(
         train_windows = window_ids[: min_train_windows + fold]
         val_window = window_ids[min_train_windows + fold]
 
-        train_fold = training_data[
-            training_data["_end_month"].isin(train_windows)
-        ]
+        train_fold = training_data[training_data["_end_month"].isin(train_windows)]
         val_fold = training_data[training_data["_end_month"] == val_window]
 
         x_train = train_fold[feats].fillna(0)
@@ -94,18 +90,20 @@ def walkforward_auc(
         if y_val.nunique() < 2:
             continue
 
-        pipe = Pipeline([
-            ("scaler", StandardScaler()),
-            (
-                "lr",
-                LogisticRegression(
-                    C=1.0,
-                    class_weight="balanced",
-                    max_iter=500,
-                    random_state=random_seed,
+        pipe = Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                (
+                    "lr",
+                    LogisticRegression(
+                        C=1.0,
+                        class_weight="balanced",
+                        max_iter=500,
+                        random_state=random_seed,
+                    ),
                 ),
-            ),
-        ])
+            ]
+        )
         pipe.fit(x_train, y_train)
         y_prob = pipe.predict_proba(x_val)[:, 1]
         auc = roc_auc_score(y_val, y_prob)
@@ -166,8 +164,13 @@ def find_best_w(
     for w in w_search:
         logger.info("Walk-forward W=%d:", w)
         r = walkforward_auc(
-            engine, w, all_months, horizon_months,
-            alpha_ewma, min_train_windows, random_seed,
+            engine,
+            w,
+            all_months,
+            horizon_months,
+            alpha_ewma,
+            min_train_windows,
+            random_seed,
         )
         results[w] = r["auc"]
 

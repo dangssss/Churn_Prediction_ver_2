@@ -8,7 +8,6 @@ Conventions applied:
 
 from __future__ import annotations
 
-import functools
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -45,7 +44,7 @@ def get_settings(
         try:
             fs = FSConfig.from_env()
             fs.validate()
-        except EnvironmentError:
+        except OSError:
             fs = None  # FS not required for all pipelines
 
     model_paths = ModelPathsConfig.from_env()

@@ -41,7 +41,6 @@ def init_schemas() -> None:
     ddl_statements = [
         # ── Schema: cskh ─────────────────────────────────
         "CREATE SCHEMA IF NOT EXISTS cskh",
-
         """CREATE TABLE IF NOT EXISTS cskh.confirmed_churners (
             id              SERIAL PRIMARY KEY,
             cms_code_enc    VARCHAR(100) NOT NULL,
@@ -51,7 +50,6 @@ def init_schemas() -> None:
             loaded_at       TIMESTAMP DEFAULT NOW(),
             UNIQUE(cms_code_enc, file_month, file_year)
         )""",
-
         """CREATE TABLE IF NOT EXISTS cskh.prototype_cache (
             id              SERIAL PRIMARY KEY,
             run_month       INT NOT NULL,
@@ -65,19 +63,13 @@ def init_schemas() -> None:
             created_at      TIMESTAMP DEFAULT NOW(),
             UNIQUE(run_month, horizon)
         )""",
-
         # Indexes
-        ("CREATE INDEX IF NOT EXISTS idx_confirmed_month_year "
-         "ON cskh.confirmed_churners(file_month, file_year)"),
-        ("CREATE INDEX IF NOT EXISTS idx_prototype_horizon "
-         "ON cskh.prototype_cache(horizon, run_month DESC)"),
-
+        ("CREATE INDEX IF NOT EXISTS idx_confirmed_month_year ON cskh.confirmed_churners(file_month, file_year)"),
+        ("CREATE INDEX IF NOT EXISTS idx_prototype_horizon ON cskh.prototype_cache(horizon, run_month DESC)"),
         # ── Schema: data_static ──────────────────────────
         "CREATE SCHEMA IF NOT EXISTS data_static",
-
         # ── Schema: data_window ──────────────────────────
         "CREATE SCHEMA IF NOT EXISTS data_window",
-
         # ── Schema: ingest ───────────────────────────────
         "CREATE SCHEMA IF NOT EXISTS ingest",
     ]
@@ -97,11 +89,13 @@ def init_schemas() -> None:
 
     # Verify
     with engine.connect() as conn:
-        result = conn.execute(text(
-            "SELECT schema_name FROM information_schema.schemata "
-            "WHERE schema_name IN ('cskh', 'data_static', 'data_window', 'ingest') "
-            "ORDER BY schema_name"
-        ))
+        result = conn.execute(
+            text(
+                "SELECT schema_name FROM information_schema.schemata "
+                "WHERE schema_name IN ('cskh', 'data_static', 'data_window', 'ingest') "
+                "ORDER BY schema_name"
+            )
+        )
         schemas = [row[0] for row in result]
         logger.info("Verified schemas: %s", schemas)
 

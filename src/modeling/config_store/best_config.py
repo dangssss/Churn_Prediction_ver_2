@@ -4,6 +4,7 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+
 def ensure_best_config_table(engine: Engine) -> None:
     create_sql = """
     CREATE SCHEMA IF NOT EXISTS data_static;
@@ -61,6 +62,7 @@ def ensure_best_config_table(engine: Engine) -> None:
             if s:
                 conn.execute(text(s))
 
+
 def upsert_best_config(engine: Engine, best_config: dict) -> None:
     ensure_best_config_table(engine)
     upsert_sql = """
@@ -95,6 +97,7 @@ def upsert_best_config(engine: Engine, best_config: dict) -> None:
     with engine.begin() as conn:
         conn.execute(text(upsert_sql), best_config)
 
+
 def load_latest_best_config(engine: Engine, horizon: int) -> dict:
     q = text("""
         SELECT *
@@ -107,7 +110,6 @@ def load_latest_best_config(engine: Engine, horizon: int) -> dict:
     if df.empty:
         raise ValueError(f"Không tìm thấy best_config cho horizon={horizon}")
     return df.iloc[0].to_dict()
-
 
 
 def load_latest_accepted_best_config(engine: Engine, horizon: int) -> dict:
@@ -123,6 +125,7 @@ def load_latest_accepted_best_config(engine: Engine, horizon: int) -> dict:
         raise ValueError(f"Không tìm thấy accepted best_config cho horizon={horizon}")
     return df.iloc[0].to_dict()
 
+
 def load_previous_accepted_best_config(engine: Engine, horizon: int) -> dict | None:
     q = text("""
         SELECT *
@@ -134,6 +137,7 @@ def load_previous_accepted_best_config(engine: Engine, horizon: int) -> dict | N
     """)
     df = pd.read_sql(q, engine, params={"h": horizon})
     return None if df.empty else df.iloc[0].to_dict()
+
 
 def ensure_main_columns(engine: Engine) -> None:
     alter_sql = """
@@ -184,6 +188,7 @@ def ensure_main_columns(engine: Engine) -> None:
             if s:
                 conn.execute(text(s))
 
+
 def update_main_metrics(engine: Engine, as_of_month: int, horizon: int, main_report: dict) -> int:
     ensure_main_columns(engine)
     if main_report.get("guardrail_warning"):
@@ -215,18 +220,15 @@ def update_main_metrics(engine: Engine, as_of_month: int, horizon: int, main_rep
         "main_f1": float(main_report["f1@main_thr"]),
         "main_ap": float(main_report["AP_val"]),
         "model_type": "xgboost",
-
         "xgb_best_iteration": main_report.get("xgb_best_iteration"),
         "xgb_best_score": main_report.get("xgb_best_score"),
         "xgb_es_rounds": main_report.get("xgb_es_rounds"),
-
         "val_prevalence": main_report.get("val_prevalence"),
         "dummy_ap_const0": main_report.get("dummy_ap_const0"),
         "dummy_ap_random": main_report.get("dummy_ap_random"),
         "dummy_ap_simple2": main_report.get("dummy_ap_simple2"),
         "dummy_simple2_features": main_report.get("dummy_simple2_features"),
         "guardrail_warning": main_report.get("guardrail_warning"),
-
         "as_of_month": int(as_of_month),
         "horizon": int(horizon),
     }

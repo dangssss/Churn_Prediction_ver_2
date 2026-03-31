@@ -1,7 +1,7 @@
 # ops/csv_utils.py
-from pathlib import Path
 import csv
 import io
+from pathlib import Path
 
 
 def sniff_delimiter_from_head(file_path: Path, sample_bytes: int = 1024 * 1024) -> str:
@@ -30,6 +30,7 @@ class GeneratorFile:
     """
     Adapter biến generator(str) thành file-like cho psycopg2.copy_expert().
     """
+
     def __init__(self, gen):
         self.gen = gen
         self.buffer = ""
@@ -68,7 +69,7 @@ def csv_stream_canonical(
     """
     text_cols = text_cols or set()
 
-    with open(file_path, "r", encoding="utf-8-sig", newline="") as f:
+    with open(file_path, encoding="utf-8-sig", newline="") as f:
         reader = csv.reader(f, delimiter=detected_delim, quotechar='"')
         buf = io.StringIO()
         writer = csv.writer(buf, delimiter=",", quotechar='"', lineterminator="\n")
