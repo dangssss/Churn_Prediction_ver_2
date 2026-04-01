@@ -4,8 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from data.ingestion.logging_config import get_logger
 from data.ingestion.resources import PostgresConfig, get_pg_conn
+from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 

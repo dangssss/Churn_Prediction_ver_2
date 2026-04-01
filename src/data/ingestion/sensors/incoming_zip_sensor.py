@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from data.ingestion.jobs.ingest_zip_job import ingest_zip_job
-from data.ingestion.logging_config import get_logger
 from data.ingestion.ops.naming import parse_zip_and_decide_names
 from data.ingestion.resources import (
     FSConfig,
@@ -10,6 +9,7 @@ from data.ingestion.resources import (
     get_pg_conn,
     list_zip_files,
 )
+from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 

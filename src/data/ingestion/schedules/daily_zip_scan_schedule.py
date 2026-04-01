@@ -2,8 +2,8 @@
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 
-from data.ingestion.logging_config import get_logger
 from data.ingestion.sensors.incoming_zip_sensor import run_once_scan
+from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 

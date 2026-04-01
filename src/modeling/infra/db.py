@@ -13,11 +13,11 @@ from dotenv import load_dotenv
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-# Ensure .env is loaded before accessing any config
-load_dotenv()
-
 from config.db_config import PostgresConfig
 from shared.db import get_engine as _shared_get_engine
+
+# Ensure .env is loaded before accessing any config
+load_dotenv()
 
 
 def get_engine(

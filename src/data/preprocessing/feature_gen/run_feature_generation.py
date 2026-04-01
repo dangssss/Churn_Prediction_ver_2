@@ -8,13 +8,13 @@ import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-# Load environment variables (centralized .env at project root)
-load_dotenv()
-
 from config.db_config import PostgresConfig
 from data.preprocessing.feature_gen.db_utils import ensure_public_table_columns_exist, ensure_public_tables_exist
 from data.preprocessing.feature_gen.render_and_execute_templates import render_and_run_all, run_static_aggregate
 from shared.logging_config import configure_logging, get_logger
+
+# Load environment variables (centralized .env at project root)
+load_dotenv()
 
 # Setup logging at module level
 configure_logging()

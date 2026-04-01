@@ -16,7 +16,7 @@ with DAG(
 
     from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
     from kubernetes.client import models as k8s
-    
+
     # Common volume configuration for data access
     volume = k8s.V1Volume(
         name="churn-data-mount",
@@ -28,14 +28,14 @@ with DAG(
         sub_path=None,
         read_only=False
     )
-    
+
     ingest_scan_and_load = KubernetesPodOperator(
         task_id="ingest_scan_and_load_k8s",
         name="churn-ingestion-pod",
         namespace="default",
         image="churn_app:latest",
         image_pull_policy="IfNotPresent",
-        cmds=["python", "-m", "pipelines.ingestion.jobs.ingest_zip_job"],
+        cmds=["python", "-m", "data.ingestion.jobs.ingest_zip_job"],
         env_vars={"TZ": "Asia/Ho_Chi_Minh"},
         volumes=[volume],
         volume_mounts=[volume_mount],
@@ -49,7 +49,7 @@ with DAG(
         namespace="default",
         image="churn_app:latest",
         image_pull_policy="IfNotPresent",
-        cmds=["python", "-m", "pipelines.ingestion.ops.post_ingest_maintenance"],
+        cmds=["python", "-m", "data.ingestion.ops.post_ingest_maintenance"],
         env_vars={"TZ": "Asia/Ho_Chi_Minh"},
         volumes=[volume],
         volume_mounts=[volume_mount],

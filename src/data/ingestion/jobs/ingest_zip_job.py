@@ -6,11 +6,11 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from data.ingestion.logging_config import get_logger
 from data.ingestion.ops.copy_and_insert_to_production import copy_and_insert_to_production
 from data.ingestion.ops.post_ingest_maintenance import post_ingest_maintenance
 from data.ingestion.ops.unzip_and_discover import unzip_and_discover
 from data.ingestion.resources import FSConfig, PostgresConfig, get_pg_conn
+from shared.logging_config import get_logger
 
 # Setup logging
 logger = get_logger(__name__)

@@ -3,12 +3,12 @@ import shutil
 import zipfile
 from pathlib import Path
 
-from data.ingestion.logging_config import get_logger
 from data.ingestion.ops.naming import (
     order_csvs_chronologically,
     parse_zip_and_decide_names,
 )
 from data.ingestion.resources import FSConfig
+from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 

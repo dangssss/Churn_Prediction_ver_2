@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 DAG: ds_churn_pipeline
 Runs the full churn prediction pipeline v2:
@@ -8,6 +6,7 @@ Runs the full churn prediction pipeline v2:
 
 Schedule: None (triggered by ds_churn_features)
 """
+from __future__ import annotations
 
 from airflow import DAG
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator

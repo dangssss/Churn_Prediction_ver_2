@@ -1,13 +1,11 @@
-from __future__ import annotations
-
 """
 DAG: ds_churn_housekeeping
 Dọn dẹp định kỳ các runtime folders
 Schedule: 03:00 hàng ngày
 """
+from __future__ import annotations
 
 from airflow import DAG
-from airflow.operators.bash import BashOperator
 from pendulum import datetime
 
 # Housekeeping script nội dung
@@ -34,7 +32,7 @@ echo "[1] Cleaning old bundles at: ${BUNDLE_DIR}"
 if [[ -d "${BUNDLE_DIR}" ]]; then
     # Đếm số lượng folder (mỗi bundle là 1 folder)
     bundle_count=$(find "${BUNDLE_DIR}" -maxdepth 1 -type d ! -path "${BUNDLE_DIR}" | wc -l)
-    
+
     if [[ ${bundle_count} -gt ${BUNDLE_KEEP_COUNT} ]]; then
         echo "   Found ${bundle_count} bundles. Keeping last ${BUNDLE_KEEP_COUNT}..."
         # List theo thời gian sửa đổi -> sort -> lấy các dòng thừa -> xóa
@@ -51,14 +49,15 @@ fi
 # 2. Log rotation (Airflow Logs)
 echo "[2] Cleaning old logs at: ${LOG_DIR}"
 if [[ -d "${LOG_DIR}" ]]; then
-    find "${LOG_DIR}" -type f \\( -name "*.log" -o -name "*.log.*" \\) -mtime +${LOG_RETENTION_DAYS} -delete 2>/dev/null || true
+    find "${LOG_DIR}" -type f \\( -name "*.log" -o -name "*.log.*" \\) \\
+        -mtime +${LOG_RETENTION_DAYS} -delete 2>/dev/null || true
     find "${LOG_DIR}" -type d -empty -delete 2>/dev/null || true
     echo "   Cleaned logs older than ${LOG_RETENTION_DAYS} days."
 fi
 
 # 3. Saved data retention (Data đã xử lý thành công)
 # Đường dẫn: /data/saved
-SAVED_DIR="${DATA_ROOT}/saved" 
+SAVED_DIR="${DATA_ROOT}/saved"
 echo "[3] Cleaning old saved data at: ${SAVED_DIR}"
 if [[ -d "${SAVED_DIR}" ]]; then
     find "${SAVED_DIR}" -type f -mtime +${SAVED_RETENTION_DAYS} -delete 2>/dev/null || true

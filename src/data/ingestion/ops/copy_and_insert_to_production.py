@@ -2,14 +2,9 @@
 from __future__ import annotations
 
 import csv
+from io import StringIO
 from pathlib import Path
 from typing import Any
-
-from data.ingestion.logging_config import get_logger
-from data.ingestion.ops.data_transformations import SafeTypeCaster
-from data.ingestion.resources import PostgresConfig, get_pg_conn
-
-logger = get_logger(__name__)
 
 from data.ingestion.config.csv_schema import (
     BATCH_ROWS,
@@ -17,13 +12,19 @@ from data.ingestion.config.csv_schema import (
     SOURCE_HAS_HEADER,
     get_table_config,
 )
+from data.ingestion.config.table_schema import get_prod_table_ddl
 from data.ingestion.ops.data_transformations import (
     CustomerEncryption,
+    SafeTypeCaster,
     transform_bccp_orderitem_row,
     transform_cas_customer_row,
     transform_cas_info_row,
     transform_cms_complaint_row,
 )
+from data.ingestion.resources import PostgresConfig, get_pg_conn
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class CsvHeaderMismatchError(Exception):
@@ -175,8 +176,6 @@ def copy_and_insert_to_production(
     - cas_customer (snapshot mode)
     - cas_info (snapshot mode)
     """
-    from data.ingestion.config.table_schema import get_prod_table_ddl
-
     base = meta["base"]
     table_name = meta["table_name"]  # vd: bccp_orderitem_2501, cas_customer
     csv_files: list[Path] = meta.get("csv_files", [])
@@ -405,8 +404,6 @@ def _bulk_insert_rows(cur, prod_tbl: str, rows: list[dict[str, Any]], base: str)
     col_str = ", ".join([f'"{col}"' for col in columns])
 
     # Tạo CSV data trong memory
-    from io import StringIO
-
     buffer = StringIO()
 
     for row in rows:
