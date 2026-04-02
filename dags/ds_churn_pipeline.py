@@ -41,6 +41,9 @@ with DAG(
             "CSKH_FILE_PATH": "/churn_data/cskh/confirmed_churners.csv",
             "CHURN_MODEL_DIR": "/churn_data/models",
         },
+        env_from=[
+            k8s.V1EnvFromSource(secret_ref=k8s.V1SecretEnvSource(name="churn-db-secret"))
+        ],
         # Mount host path or PVC to the container for data/models (assuming local HostPath for dev)
         volumes=[
             k8s.V1Volume(

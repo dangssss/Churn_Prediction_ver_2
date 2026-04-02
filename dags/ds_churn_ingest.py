@@ -38,6 +38,9 @@ with DAG(
         image_pull_policy="IfNotPresent",
         cmds=["python", "-m", "data.ingestion.jobs.ingest_zip_job"],
         env_vars={"TZ": "Asia/Ho_Chi_Minh"},
+        env_from=[
+            k8s.V1EnvFromSource(secret_ref=k8s.V1SecretEnvSource(name="churn-db-secret"))
+        ],
         volumes=[volume],
         volume_mounts=[volume_mount],
         is_delete_operator_pod=False,
@@ -52,6 +55,9 @@ with DAG(
         image_pull_policy="IfNotPresent",
         cmds=["python", "-m", "data.ingestion.ops.post_ingest_maintenance"],
         env_vars={"TZ": "Asia/Ho_Chi_Minh"},
+        env_from=[
+            k8s.V1EnvFromSource(secret_ref=k8s.V1SecretEnvSource(name="churn-db-secret"))
+        ],
         volumes=[volume],
         volume_mounts=[volume_mount],
         is_delete_operator_pod=False,

@@ -122,6 +122,9 @@ with DAG(
         image_pull_policy="IfNotPresent",
         cmds=["/bin/bash", "-c", HOUSEKEEPING_SCRIPT],
         env_vars={"CHURN_MODEL_DIR": "/churn_data/models"},
+        env_from=[
+            k8s.V1EnvFromSource(secret_ref=k8s.V1SecretEnvSource(name="churn-db-secret"))
+        ],
         volumes=[volume],
         volume_mounts=[volume_mount],
         is_delete_operator_pod=False,
