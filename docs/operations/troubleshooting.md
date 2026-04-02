@@ -41,3 +41,23 @@
 - **Dấu hiệu:** Terminal báo lỗi đỏ chót từ chối khi gõ `helm upgrade`, đặc biệt nếu vừa mới bật ổ cứng Volumes Persistence cho StatefulSets (vd: `airflow-triggerer`).
 - **Nguyên nhân:** Thiết kế chuẩn của K8s không cho phép tự ý cấp phát Volumes đè vào các StatefulSets đang chạy sống.
 - **Cách xử lý:** Reset cái StatefulSets đang kẹt (ví dụ: `kubectl delete statefulset airflow-triggerer -n default`) và chạy lại `helm upgrade` là xong. Bộ sinh Pod sẽ rà soát và cấu hình Volume mới mượt mà.
+
+## 4. Monitoring & Grafana (Môi trường Local Docker Desktop)
+### Lỗi: Dashboard Grafana có báo Request/Limit nhưng báo "No data" ở biểu đồ tài nguyên thực tế (CPU/Memory Utilisation)
+- **Dấu hiệu:** Trên Grafana, bảng `Kubernetes / Compute Resources / Namespace (Pods)` hiển thị trống trơn các biểu đồ dạng đường, trong khi cột Limit và Quota vẫn có số.
+- **Nguyên nhân:** 
+  1. Kubelet mặc định chặn Prometheus scrape dữ liệu do lỗi chứng chỉ tự ký (self-signed).
+  2. Dù Prometheus vượt qua bảo mật (bằng cách chỉnh `insecureSkipVerify: true` trong Helm values), **Docker Desktop có giới hạn cố hữu**: Kubelet (chạy cAdvisor) của nó chỉ xuất metrics cấp độ "Pod", chứ KHÔNG có metric cấp độ "Container". Nhãn (label) `container` bị bỏ trống.
+  3. Dashboard mặc định của cộng đồng lại dùng câu lệnh PromQL bắt buộc nhóm theo nhãn `container` (ví dụ: `sum by (pod, container)`). Vì tìm không ra nhãn này, nó báo lỗi "No data".
+- **Cách xử lý:**
+  Đây là giới hạn thuần túy của giả lập Local, lên Production thật sẽ không bị. Để phục vụ việc theo dõi ở Local, hãy ấn vào menu **Explore** (la bàn) trên Grafana và gõ các câu lệnh tuỳ chỉnh không cần nhãn `container`.
+  
+  *Ví dụ các câu lệnh PromQL dùng cho Docker Desktop:*
+  - Theo dõi RAM tổng của toán bộ Pipeline Churn:
+    ```promql
+    sum(container_memory_usage_bytes{pod=~"churn-pipeline-.*"}) by (pod)
+    ```
+  - Theo dõi CPU của toàn bộ namespace mặc định:
+    ```promql
+    sum(irate(container_cpu_usage_seconds_total{namespace="default"}[5m])) by (pod)
+    ```
