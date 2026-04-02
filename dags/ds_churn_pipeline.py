@@ -45,7 +45,8 @@ with DAG(
         volumes=[
             k8s.V1Volume(
                 name="churn-data-mount",
-                host_path=k8s.V1HostPathVolumeSource(path="/data/churn_prediction/ftp_churn")
+                # prod: path="/data/churn_prediction/ftp_churn"
+                host_path=k8s.V1HostPathVolumeSource(path="D:\\Churn_Prediction_Product\\data")
             )
         ],
         volume_mounts=[
@@ -56,6 +57,6 @@ with DAG(
                 read_only=False
             )
         ],
-        is_delete_operator_pod=True, # Cleanup after successful run
+        is_delete_operator_pod=False, # Cleanup after successful run
         get_logs=True,
     )

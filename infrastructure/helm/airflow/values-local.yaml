@@ -12,11 +12,12 @@ scheduler:
       memory: "256Mi"
 
 workers:
-  replicas: 1
-  resources:
-    requests:
-      cpu: "100m"
-      memory: "256Mi"
+  kubernetes:
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+
 
 webserver:
   resources:
