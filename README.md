@@ -212,26 +212,37 @@ cp .env.example .env
 pytest
 ```
 
-### 4.3 Docker Deployment (Production)
+### 4.3 Kubernetes Deployment (Tiêu chuẩn K8s Local/Production)
 
-```yaml
-# docker-compose.yaml key volumes:
-volumes:
-  - ../src:/churn_source/src       # Source code
-  - ../dags:/opt/airflow/dags      # DAG files
-  - /data:/churn_data              # Data directories
-environment:
-  - PYTHONPATH=/churn_source/src
-  - CHURN_MODEL_DIR=/churn_data/models
-```
+Hệ thống được thiết kế bắt buộc triển khai qua **KubernetesPodOperator** trên môi trường K8s bằng Helm. Tuyệt đối không dùng docker-compose cho môi trường chạy Dataset Prep / Modeling vì sẽ vượt quá giới hạn RAM của 1 máy chủ ảo đơn lẻ.
 
+**1. Chuẩn bị K8s Secrets**
+Tạo khóa cho kết nối Database (thay vì để public file `.env`):
 ```bash
-# Start Airflow
-docker compose up -d
-
-# Verify DAGs
-docker exec airflow-worker airflow dags list | grep ds_churn
+kubectl create secret generic churn-db-secret --from-env-file=".env" -n default
 ```
+*(Nếu dùng GitSync, tạo thêm secret `airflow-git-ssh-key`).*
+
+**2. Cài đặt Airflow bằng Helm**
+```bash
+helm repo add apache-airflow https://airflow.apache.org
+helm repo update
+
+# Sử dụng file override cho local (resources & logs persistence)
+.\helm upgrade --install airflow apache-airflow/airflow \
+  --namespace default \
+  -f infrastructure/helm/airflow/values.yaml \
+  -f infrastructure/helm/airflow/values-local.yaml
+```
+
+**3. Giám sát & Dashboard (Prometheus/Grafana)**
+Mọi tác vụ đào tạo Model bằng XGBoost sẽ được đóng gói thành các K8s Pods riêng biệt. Cần chạy kèm hệ thống Mắt thần để giám sát RAM/CPU.
+```bash
+# Xem hướng dẫn cấu hình Dashboard tại docs/operations/monitoring_guide.md
+kubectl port-forward svc/monitoring-grafana 3000:80 -n monitoring
+```
+
+> **Lưu ý Path trên Windows:** Nếu test bằng Docker Desktop, đường dẫn Mount Database Data trong YAML phải đổi thành định dạng Linux Node VM: `/run/desktop/mnt/host/d/...`
 
 ### 4.4 Chạy Pipeline thủ công (không qua Airflow)
 
