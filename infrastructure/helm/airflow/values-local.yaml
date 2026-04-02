@@ -33,3 +33,8 @@ webserver:
 #   persistence:
 #     enabled: true
 #     existingClaim: "local-dags-pvc" # You must create this claim manually first
+
+logs:
+  persistence:
+    enabled: true
+    size: 1Gi
