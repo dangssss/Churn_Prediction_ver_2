@@ -1,7 +1,7 @@
 """CLI entry point for monthly v2 pipeline.
 
 Usage (from Docker / Airflow BashOperator):
-    python -m modeling.pipeline.monthly_v2_cli
+    python -m pipelines.monthly.monthly_v2_cli
 
 Convention: 01-Structure §6.2 — thin CLI, delegates to application layer.
 Convention: 08-Security §3 — credentials from env vars only.

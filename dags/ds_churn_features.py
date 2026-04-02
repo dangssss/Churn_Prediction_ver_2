@@ -1,7 +1,16 @@
+"""DAG: ds_churn_features
+
+Generates sliding-window features from ingested data and triggers
+the downstream pipeline DAG.
+
+Schedule: None (triggered by ds_churn_ingest)
+"""
 from __future__ import annotations
 
 from airflow import DAG
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
+from kubernetes.client import models as k8s
 from pendulum import datetime
 
 with DAG(
@@ -13,9 +22,6 @@ with DAG(
     default_args={"retries": 1},
     tags=["ds_churn", "features"],
 ) as dag:
-
-    from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
-    from kubernetes.client import models as k8s
 
     # Common volume configuration for data access
     volume = k8s.V1Volume(
@@ -47,7 +53,7 @@ with DAG(
         ],
         volumes=[volume],
         volume_mounts=[volume_mount],
-        is_delete_operator_pod=False,
+        is_delete_operator_pod=True,
         get_logs=True,
     )
 

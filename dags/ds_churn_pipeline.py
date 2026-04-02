@@ -60,6 +60,6 @@ with DAG(
                 read_only=False
             )
         ],
-        is_delete_operator_pod=False, # Cleanup after successful run
+        is_delete_operator_pod=True,
         get_logs=True,
     )

@@ -6,6 +6,8 @@ Schedule: 03:00 hàng ngày
 from __future__ import annotations
 
 from airflow import DAG
+from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
+from kubernetes.client import models as k8s
 from pendulum import datetime
 
 # Housekeeping script nội dung
@@ -97,8 +99,7 @@ with DAG(
     tags=["ds_churn", "maintenance"],
 ) as dag:
 
-    from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
-    from kubernetes.client import models as k8s
+    # Imports moved to module top per Convention 04 §4.1
 
     # Note: For logs sweeping, Airflow logs might be on a different PVC (or not needed locally if ephemeral pod)
     # But we mount /churn_data PVC to sweep bundles, saved, failed data.
@@ -127,6 +128,6 @@ with DAG(
         ],
         volumes=[volume],
         volume_mounts=[volume_mount],
-        is_delete_operator_pod=False,
+        is_delete_operator_pod=True,
         get_logs=True,
     )

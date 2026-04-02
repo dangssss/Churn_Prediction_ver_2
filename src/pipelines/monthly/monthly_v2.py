@@ -74,7 +74,7 @@ def run_monthly_v2(
     model_config.validate()
 
     if bundle_dir is None:
-        from modeling.config.paths import CHURN_MODEL_DIR
+        from modeling.config.paths import CHURN_MODEL_DIR  # Lazy: avoid import at module level when env var may not be set yet
 
         bundle_dir = CHURN_MODEL_DIR / "bundles" / "latest"
     bundle_dir = Path(bundle_dir)
@@ -222,7 +222,7 @@ def run_monthly_v2(
             engine,
             scored_df,
             threshold=threshold,
-            w_star=None,  # TODO: pass from pipeline artifacts
+            w_star=None,  # Deferred: w_star not yet tracked in v2 pipeline artifacts (non-blocking)
             horizon=horizon,
         )
         summary["n_inserted"] = n_inserted

@@ -1,7 +1,16 @@
+"""DAG: ds_churn_ingest
+
+Scans for new ZIP data files, loads them into the database,
+validates data quality, and triggers the features DAG.
+
+Schedule: 09:00 on the 13th and 23rd of every month
+"""
 from __future__ import annotations
 
 from airflow import DAG
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
+from kubernetes.client import models as k8s
 from pendulum import datetime
 
 with DAG(
@@ -13,9 +22,6 @@ with DAG(
     default_args={"retries": 2},
     tags=["ds_churn", "ingest"],
 ) as dag:
-
-    from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
-    from kubernetes.client import models as k8s
 
     # Common volume configuration for data access
     volume = k8s.V1Volume(
@@ -43,7 +49,7 @@ with DAG(
         ],
         volumes=[volume],
         volume_mounts=[volume_mount],
-        is_delete_operator_pod=False,
+        is_delete_operator_pod=True,
         get_logs=True,
     )
 
@@ -60,7 +66,7 @@ with DAG(
         ],
         volumes=[volume],
         volume_mounts=[volume_mount],
-        is_delete_operator_pod=False,
+        is_delete_operator_pod=True,
         get_logs=True,
     )
 
