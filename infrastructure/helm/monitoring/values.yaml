@@ -1,0 +1,56 @@
+# Values overrides for kube-prometheus-stack
+# Designed for On-Premise/Private VM deployments
+
+coreDns:
+  enabled: true
+
+kubeControllerManager:
+  enabled: true
+
+kubeEtcd:
+  enabled: true
+
+kubeScheduler:
+  enabled: true
+
+# Turn off noisy alerts that might not apply to a single-node VM
+defaultRules:
+  create: true
+  rules:
+    kubeApiserverAvailability: false
+    kubeApiserverSlos: false
+    network: false
+
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    # Disable HA for local/single-node VM to save resources
+    replicas: 1
+
+grafana:
+  enabled: true
+  adminPassword: "admin" # Change this in true Production
+  # Optionally add persistence for Grafana dashboards/users
+  persistence:
+    type: pvc
+    enabled: true
+    accessModes:
+      - ReadWriteOnce
+    size: 2Gi
+
+prometheus:
+  prometheusSpec:
+    # Disable HA for local/single-node VM to save resources
+    replicas: 1
+    retention: 15d # Retain metrics for 15 days
+    resources:
+      requests:
+        memory: 400Mi
+    # Persistence for Prometheus Data
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi

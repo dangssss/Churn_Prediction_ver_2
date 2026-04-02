@@ -46,24 +46,54 @@ docker build -t churn_app:latest -f infrastructure/Dockerfile.app .
 docker build -t churn_app_airflow:latest -f infrastructure/Dockerfile.airflow .
 ```
 
-**Bước 2: Deploy Airflow qua Helm**
-Sử dụng 2 file config: `values.yaml` (chuẩn) và `values-local.yaml` (ghi đè resource cho nhẹ máy).
+**Bước 2: Thiết lập K8s Secrets (Bắt buộc cho Local 1:1)**
+Đảm bảo bạn đã có file `.env` chứa credential DB chuẩn ở thư mục dự án:
+```bash
+# 1. Tạo SSH Key phục vụ Airflow GitSync 
+ssh-keygen -t rsa -b 4096 -f "$HOME\.ssh\id_rsa_airflow_local" -N '""'
+# (Copy public key ở file .pub gán lên Github Deploy Keys của repo này)
+kubectl create secret generic airflow-git-ssh-key --from-file=gitSshKey="$HOME\.ssh\id_rsa_airflow_local" -n default
+
+# 2. Tạo DB Secret cho Pipeline Operators gọi từ Kubernetes
+kubectl create secret generic churn-db-secret --from-env-file=".env" -n default
+```
+
+**Bước 3: Deploy Airflow qua Helm**
 ```bash
 helm repo add apache-airflow https://airflow.apache.org
 helm repo update
 
-helm upgrade --install airflow apache-airflow/airflow \
+# Triển khai / Nâng cấp Airflow với cấu hình GitSync và Logs PVC
+.\helm upgrade --install airflow apache-airflow/airflow \
   --namespace default \
   -f infrastructure/helm/airflow/values.yaml \
   -f infrastructure/helm/airflow/values-local.yaml
 ```
 
-**Bước 3: Truy cập và Theo dõi**
+**Bước 4: Truy cập và Theo dõi**
 ```bash
 # Ánh xạ cổng để truy cập UI ở http://localhost:8080 (Tài khoản: admin / admin)
-kubectl port-forward svc/airflow-webserver 8080:8080 -n default
+kubectl port-forward svc/airflow-api-server 8080:8080 -n default
 ```
-Khi bạn bật DAG (vd: `ds_churn_pipeline`), K8s sẽ tự động sinh ra các Pod độc lập (tên dạng `churn-pipeline-v2-pod-xxxxx`) để chạy task và tự hủy khi xong. Giám sát bằng: `kubectl get pods --watch -n default`.
+Khi bạn bật DAG (vd: `ds_churn_pipeline`), K8s sẽ tự động sinh ra các Pod độc lập (tên dạng `churn-pipeline-v2-pod-xxxxx`) để chạy task tính toán và tắt đi sau khi hoàn tất.
+
+> [!NOTE] 
+> Lưu ý về OS Path: Nếu test local trên Docker Desktop Windows bằng tính năng `host_path` trong DAG Operator, bắt buộc dùng đường dẫn dạng Linux-node chuẩn: `/run/desktop/mnt/host/d/Churn_Prediction_Product/...` thay vì format ổ đĩa `D:\...` để tránh lỗi parse volume.
+**Bước 5: Cài đặt Giám sát (Prometheus & Grafana)**
+Trên hệ thống máy ảo độc lập, chúng ta cần cài đặt Stack Giám sát để theo dõi tài nguyên RAM/CPU nếu không sẽ bị mù thông tin.
+```bash
+# Thêm repo
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+# Triển khai bộ Monitor
+.\helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+  --namespace monitoring --create-namespace \
+  -f infrastructure/helm/monitoring/values.yaml
+
+# Xong xuôi, Port forward Grafana để xem biểu đồ (Truy cập localhost:3000, Tài khoản: admin/admin)
+kubectl port-forward svc/monitoring-grafana 3000:80 -n monitoring
+```
 
 ---
 

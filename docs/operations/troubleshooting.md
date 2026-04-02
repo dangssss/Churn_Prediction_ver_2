@@ -21,3 +21,23 @@
 ### Lỗi: Dự đoán không nhất quán (Model Drift Warning)
 - **Dấu hiệu:** Tỉ lệ Churn dự đoán đột ngột chênh lệc 5x so với quá khứ.
 - **Cách xử lý:** `# TODO(author): Thu thập data gần nhất, chạy Retraining Pipeline thủ công, verify trước khi đẩy model lên Production.`
+
+## 3. Kubernetes Deployment & Airflow Helm
+### Lỗi: `invalid mode: /churn_data` khi mount volume trên Docker Desktop Windows
+- **Dấu hiệu:** Kubernetes Pod Operator báo lỗi tạo Container. Nguyên nhân do mount data bằng `host_path` có chứa `D:\...`. Docker cắt lấy chuỗi `:` làm parameter mode nên báo lỗi.
+- **Cách xử lý:** Không dùng format ổ Windows. Đổi `host_path` sang chuẩn mount ngầm của Docker Desktop Virtual Machine: `/run/desktop/mnt/host/d/Churn_Prediction_Product/...`
+
+### Lỗi: Airflow Webserver không đọc được log (NameResolutionError / Failed to resolve)
+- **Dấu hiệu:** UI báo `Max retries exceeded with url... Failed to resolve '[worker-pod-name]'`. Hiện tượng này diễn ra khi Airflow dùng `KubernetesExecutor`.
+- **Nguyên nhân:** Khi 1 task kết thúc, Worker Pod đó bị K8s xóa. Trong khi chạy local, hệ thống lại chưa có kho chứa Log riêng nên Webserver mò tìm vào đúng cái IP của Pod đã biến mất.
+- **Cách xử lý:** Phải sửa cấu hình Helm (`values-local.yaml`) bật Persistent Volume cho Log (`logs.persistence.enabled: true`).
+
+### Lỗi: KPO báo `Missing required environment variables: PG_USER and PG_PW`
+- **Dấu hiệu:** Task Ingest / Pipeline thất bại ngay từ giây đầu tiên vì không gọi được Database.
+- **Nguyên nhân:** DAG gọi KPO pod ra là một container mới hoàn toàn (trống rỗng), không có `.env` file bên cạnh như chạy local script.
+- **Cách xử lý:** Khởi tạo DB Crentials thành 1 cái Secrets trong cụm K8s (`kubectl create secret generic churn-db-secret --from-env-file=".env"`). Xong xuôi, tại KubernetesPodOperator, inject secret đố vào Pod = `env_from=[k8s.V1EnvFromSource(secret_ref=...)]`. 
+
+### Lỗi: UPGRADE FAILED: `cannot patch ... with kind StatefulSet ... fields other than ... are forbidden`
+- **Dấu hiệu:** Terminal báo lỗi đỏ chót từ chối khi gõ `helm upgrade`, đặc biệt nếu vừa mới bật ổ cứng Volumes Persistence cho StatefulSets (vd: `airflow-triggerer`).
+- **Nguyên nhân:** Thiết kế chuẩn của K8s không cho phép tự ý cấp phát Volumes đè vào các StatefulSets đang chạy sống.
+- **Cách xử lý:** Reset cái StatefulSets đang kẹt (ví dụ: `kubectl delete statefulset airflow-triggerer -n default`) và chạy lại `helm upgrade` là xong. Bộ sinh Pod sẽ rà soát và cấu hình Volume mới mượt mà.
