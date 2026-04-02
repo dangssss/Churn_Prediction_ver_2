@@ -13,6 +13,15 @@ kubeEtcd:
 kubeScheduler:
   enabled: true
 
+kubelet:
+  enabled: true
+  serviceMonitor:
+    https: true
+    insecureSkipVerify: true
+    cAdvisor:
+      https: true
+      insecureSkipVerify: true
+
 # Turn off noisy alerts that might not apply to a single-node VM
 defaultRules:
   create: true
