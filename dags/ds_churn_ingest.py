@@ -20,7 +20,8 @@ with DAG(
     # Common volume configuration for data access
     volume = k8s.V1Volume(
         name="churn-data-mount",
-        host_path=k8s.V1HostPathVolumeSource(path="/data/churn_prediction/ftp_churn")
+        # prod: path="/data/churn_prediction/ftp_churn"
+        host_path=k8s.V1HostPathVolumeSource(path="/run/desktop/mnt/host/d/Churn_Prediction_Product/data")
     )
     volume_mount = k8s.V1VolumeMount(
         name="churn-data-mount",
@@ -39,7 +40,7 @@ with DAG(
         env_vars={"TZ": "Asia/Ho_Chi_Minh"},
         volumes=[volume],
         volume_mounts=[volume_mount],
-        is_delete_operator_pod=True,
+        is_delete_operator_pod=False,
         get_logs=True,
     )
 
@@ -53,7 +54,7 @@ with DAG(
         env_vars={"TZ": "Asia/Ho_Chi_Minh"},
         volumes=[volume],
         volume_mounts=[volume_mount],
-        is_delete_operator_pod=True,
+        is_delete_operator_pod=False,
         get_logs=True,
     )
 
