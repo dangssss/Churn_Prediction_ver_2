@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Tuple, Dict, Any
 
 import numpy as np
 import pandas as pd
@@ -10,13 +10,16 @@ import pandas as pd
 # YYMM helpers
 # ---------------------------
 
-def yymm_to_ym(yymm: int) -> tuple[int,int]:
+
+def yymm_to_ym(yymm: int) -> tuple[int, int]:
     y = yymm // 100
     m = yymm % 100
     return y, m
 
+
 def ym_to_yymm(y: int, m: int) -> int:
     return y * 100 + m
+
 
 def add_months_yymm(yymm: int, n: int) -> int:
     """Add n months to an integer YYMM (e.g., 2510). Handles year boundaries."""
@@ -26,20 +29,24 @@ def add_months_yymm(yymm: int, n: int) -> int:
     m2 = (total % 12) + 1
     return ym_to_yymm(y2, m2)
 
+
 def prev_yymm(yymm: int, n: int = 1) -> int:
     return add_months_yymm(yymm, -int(n))
+
 
 # ---------------------------
 # Column utilities
 # ---------------------------
 
-def _find_col(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
+
+def _find_col(df: pd.DataFrame, candidates: Iterable[str]) -> str | None:
     for c in candidates:
         if c in df.columns:
             return c
     return None
 
-def _mean_of_cols(df: pd.DataFrame, cols: List[str]) -> tuple[pd.Series, pd.Series]:
+
+def _mean_of_cols(df: pd.DataFrame, cols: list[str]) -> tuple[pd.Series, pd.Series]:
     """Return (mean, n_used) per row across available columns."""
     avail = [c for c in cols if c in df.columns]
     if not avail:
@@ -51,26 +58,30 @@ def _mean_of_cols(df: pd.DataFrame, cols: List[str]) -> tuple[pd.Series, pd.Seri
     mean = mat.mean(axis=1, skipna=True)
     return mean, n_used
 
+
 def _safe_div(a: pd.Series, b: pd.Series) -> pd.Series:
     a = pd.to_numeric(a, errors="coerce").astype(float)
     b = pd.to_numeric(b, errors="coerce").astype(float)
     out = a / b.replace({0.0: np.nan})
     return out.replace([np.inf, -np.inf], np.nan)
 
+
 def _as_num(s: pd.Series, default: float = 0.0) -> pd.Series:
     x = pd.to_numeric(s, errors="coerce")
     return x.fillna(default)
+
 
 # ---------------------------
 # Rule configuration
 # ---------------------------
 
+
 @dataclass
 class ChurnTypeThresholds:
     # spike thresholds (reactive)
-    spike_pct: float = 0.15          # +15%
+    spike_pct: float = 0.15  # +15%
     # drop thresholds (proactive / experience)
-    drop_item_pct: float = 0.50      # item_last < 50% avg prev
+    drop_item_pct: float = 0.50  # item_last < 50% avg prev
     drop_revenue_pct: float = 0.50
     drop_experience_pct: float = 0.15  # satisfaction/order_score drop 15%
     # minimum baseline to consider
@@ -86,8 +97,10 @@ class ChurnTypeThresholds:
     # value drop (avg revenue per item)
     drop_value_pct: float = 0.15
 
-def _monthly_cols(base: str, months: List[int]) -> List[str]:
+
+def _monthly_cols(base: str, months: list[int]) -> list[str]:
     return [f"{base}_{i}m_ago" for i in months]
+
 
 def _resolve_metric_base(metric: str) -> str:
     # normalize common typo for satisfaction
@@ -95,9 +108,11 @@ def _resolve_metric_base(metric: str) -> str:
         return "satisfaction"
     return metric
 
+
 # ---------------------------
 # Core analysis
 # ---------------------------
+
 
 def analyze_proact_react(
     df: pd.DataFrame,
@@ -138,7 +153,9 @@ def analyze_proact_react(
         ref_suffix = "1m_ago"
         prev_months = [i for i in [2, 3, 4] if i <= max_ago]
         if "window_end" in d.columns:
-            d["ref_month"] = d["window_end"].apply(lambda x: prev_yymm(int(x), 1) if pd.notna(x) else pd.NA).astype("Int64")
+            d["ref_month"] = (
+                d["window_end"].apply(lambda x: prev_yymm(int(x), 1) if pd.notna(x) else pd.NA).astype("Int64")
+            )
         else:
             d["ref_month"] = pd.Series([pd.NA] * len(d), index=d.index, dtype="Int64")
 
@@ -192,7 +209,11 @@ def analyze_proact_react(
         i_col = f"item_{i}m_ago"
         r_col = f"revenue_{i}m_ago"
         if i_col in d.columns and r_col in d.columns:
-            rpi_cols.append((_safe_div(_as_num(d[r_col], np.nan), _as_num(d[i_col], np.nan).where(_as_num(d[i_col], np.nan) > 0, np.nan))))
+            rpi_cols.append(
+                _safe_div(
+                    _as_num(d[r_col], np.nan), _as_num(d[i_col], np.nan).where(_as_num(d[i_col], np.nan) > 0, np.nan)
+                )
+            )
     if rpi_cols:
         mat = pd.concat(rpi_cols, axis=1)
         d["_rpi_prev"] = mat.mean(axis=1, skipna=True)
@@ -203,10 +224,10 @@ def analyze_proact_react(
     # Evaluate rules -> reasons
     # ---------------------------
 
-    reactive_reasons: List[List[str]] = [[] for _ in range(len(d))]
-    proactive_reasons: List[List[str]] = [[] for _ in range(len(d))]
+    reactive_reasons: list[list[str]] = [[] for _ in range(len(d))]
+    proactive_reasons: list[list[str]] = [[] for _ in range(len(d))]
 
-    def _append(mask: pd.Series, bucket: List[List[str]], code: str):
+    def _append(mask: pd.Series, bucket: list[list[str]], code: str):
         idx = np.where(mask.fillna(False).to_numpy())[0]
         for j in idx:
             bucket[j].append(code)
@@ -214,7 +235,10 @@ def analyze_proact_react(
     # --- Reactive: A/B/C groups
     # A: complaint spike
     _append(
-        (_as_num(d[f"complaint_{ref_suffix}"], 0.0) > (1 + thresholds.spike_pct) * _as_num(d["avg_prev_complaint"], np.nan))
+        (
+            _as_num(d[f"complaint_{ref_suffix}"], 0.0)
+            > (1 + thresholds.spike_pct) * _as_num(d["avg_prev_complaint"], np.nan)
+        )
         & (_as_num(d["avg_prev_complaint"], 0.0) >= thresholds.min_prev_events),
         reactive_reasons,
         "R_COMPLAINT_SPIKE",
@@ -235,13 +259,19 @@ def analyze_proact_react(
     )
     # C: satisfaction drop
     _append(
-        (_as_num(d[f"satisfaction_{ref_suffix}"], np.nan) < (1 - thresholds.drop_experience_pct) * _as_num(d["avg_prev_satisfaction"], np.nan)),
+        (
+            _as_num(d[f"satisfaction_{ref_suffix}"], np.nan)
+            < (1 - thresholds.drop_experience_pct) * _as_num(d["avg_prev_satisfaction"], np.nan)
+        ),
         reactive_reasons,
         "R_SATISFACTION_DROP",
     )
     # C: order_score drop
     _append(
-        (_as_num(d[f"order_score_{ref_suffix}"], np.nan) < (1 - thresholds.drop_experience_pct) * _as_num(d["avg_prev_order_score"], np.nan)),
+        (
+            _as_num(d[f"order_score_{ref_suffix}"], np.nan)
+            < (1 - thresholds.drop_experience_pct) * _as_num(d["avg_prev_order_score"], np.nan)
+        ),
         reactive_reasons,
         "R_ORDER_SCORE_DROP",
     )
@@ -282,9 +312,17 @@ def analyze_proact_react(
 
     # F: service diversity low / dominance high
     if "service_types_used" in d.columns:
-        _append(_as_num(d["service_types_used"], 0.0) <= thresholds.service_types_low, proactive_reasons, "P_SERVICE_TYPES_LOW")
+        _append(
+            _as_num(d["service_types_used"], 0.0) <= thresholds.service_types_low,
+            proactive_reasons,
+            "P_SERVICE_TYPES_LOW",
+        )
     if "dominant_service_ratio" in d.columns:
-        _append(_as_num(d["dominant_service_ratio"], 0.0) >= thresholds.dominant_service_ratio_high, proactive_reasons, "P_DOMINANT_SERVICE_HIGH")
+        _append(
+            _as_num(d["dominant_service_ratio"], 0.0) >= thresholds.dominant_service_ratio_high,
+            proactive_reasons,
+            "P_DOMINANT_SERVICE_HIGH",
+        )
 
     # G: tenure low (needs lifetime join)
     if "tenure" in d.columns:
@@ -329,7 +367,17 @@ def analyze_proact_react(
 
     # Clean up temporary columns (keep avg_prev_* for evidence)
     # We keep avg_prev_* + n_prev_* because very useful for audit.
-    for c in ["_item_ref","_pct_complaint_ref","_pct_delay_ref","_pct_nodone_ref","_pct_complaint_prev","_pct_delay_prev","_pct_nodone_prev","_rpi_ref","_rpi_prev"]:
+    for c in [
+        "_item_ref",
+        "_pct_complaint_ref",
+        "_pct_delay_ref",
+        "_pct_nodone_ref",
+        "_pct_complaint_prev",
+        "_pct_delay_prev",
+        "_pct_nodone_prev",
+        "_rpi_ref",
+        "_rpi_prev",
+    ]:
         if c in d.columns:
             d.drop(columns=[c], inplace=True)
 

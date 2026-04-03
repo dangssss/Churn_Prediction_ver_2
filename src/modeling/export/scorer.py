@@ -21,6 +21,7 @@ def score_all(
     model: xgb.Booster,
     ds: DatasetResult,
     threshold: float,
+    top_percentile: float | None = 10.0,
 ) -> pd.DataFrame:
     """Score all active customers and attach predictions.
 
@@ -35,13 +36,23 @@ def score_all(
     dpredict = xgb.DMatrix(ds.x_predict, feature_names=ds.feature_names)
     y_prob = model.predict(dpredict)
 
+    if top_percentile is not None:
+        dynamic_threshold = float(np.percentile(y_prob, 100.0 - top_percentile))
+        effective_threshold = max(threshold, dynamic_threshold)
+        logger.info(
+            "Top %.1f%% cutoff requested. Dynamic threshold=%.4f, Original=%.4f",
+            top_percentile, dynamic_threshold, threshold,
+        )
+    else:
+        effective_threshold = threshold
+
     scored = ds.active_df.copy()
     scored["churn_probability"] = y_prob
-    scored["churn_flag"] = (y_prob >= threshold).astype(int)
+    scored["churn_flag"] = (y_prob >= effective_threshold).astype(int)
 
     logger.info(
-        "Scored %d customers: threshold=%.4f, flagged=%d (%.1f%%)",
-        len(scored), threshold,
+        "Scored %d customers: effective_threshold=%.4f, flagged=%d (%.1f%%)",
+        len(scored), effective_threshold,
         int(scored["churn_flag"].sum()),
         scored["churn_flag"].mean() * 100,
     )

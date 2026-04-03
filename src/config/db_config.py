@@ -52,7 +52,7 @@ class PostgresConfig:
         password = os.getenv("PG_PW")
 
         if not user or not password:
-            raise EnvironmentError(
+            raise OSError(
                 "Missing required environment variables: PG_USER and PG_PW. "
                 "Set them in .env or export them before running."
             )
@@ -75,9 +75,7 @@ class PostgresConfig:
         if not self.host:
             raise ValueError("PostgresConfig.host must not be empty.")
         if not (1 <= self.port <= 65535):
-            raise ValueError(
-                f"PostgresConfig.port must be 1–65535, got {self.port}."
-            )
+            raise ValueError(f"PostgresConfig.port must be 1–65535, got {self.port}.")
         if not self.dbname:
             raise ValueError("PostgresConfig.dbname must not be empty.")
         if not self.user:
@@ -88,20 +86,11 @@ class PostgresConfig:
     # ── Derived values ─────────────────────────────────────
     def dsn(self) -> str:
         """libpq-style DSN (for psycopg2.connect)."""
-        return (
-            f"host={self.host} "
-            f"port={self.port} "
-            f"dbname={self.dbname} "
-            f"user={self.user} "
-            f"password={self.password}"
-        )
+        return f"host={self.host} port={self.port} dbname={self.dbname} user={self.user} password={self.password}"
 
     def sqlalchemy_url(self) -> str:
         """SQLAlchemy connection URL."""
-        return (
-            f"postgresql+psycopg2://{self.user}:{self.password}"
-            f"@{self.host}:{self.port}/{self.dbname}"
-        )
+        return f"postgresql+psycopg2://{self.user}:{self.password}@{self.host}:{self.port}/{self.dbname}"
 
     # ── Safe representation ────────────────────────────────
     def to_safe_dict(self) -> dict[str, str | int]:

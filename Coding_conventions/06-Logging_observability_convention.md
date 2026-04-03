@@ -314,6 +314,8 @@ Theo dõi các metric phản ánh:
 
 ### 6.3 Metrics must use stable names and clear labels / Metric phải có tên ổn định và nhãn rõ ràng
 
+> **Cross-reference / Tham chiếu chéo**: Chuẩn đặt tên metric cụ thể cho Prometheus (format `<namespace>_<subsystem>_<name>_<unit>`, label naming) được định nghĩa trong `18-Observability_orchestration_conventions` §7.3.
+
 #### EN
 Metric names should be stable, descriptive, and consistent.  
 Labels should be chosen carefully to avoid uncontrolled cardinality.
@@ -419,6 +421,8 @@ Use traces to understand flow, timing, and dependency relationships across multi
 Dùng trace để hiểu luồng, thời gian, và quan hệ phụ thuộc giữa nhiều service hoặc nhiều bước xử lý.
 
 ## 9. Alerting conventions / Quy ước về alert
+
+> **Cross-reference / Tham chiếu chéo**: Format cụ thể cho Prometheus alert rule (PrometheusRule CRD, bắt buộc severity/summary/description/runbook_url) được định nghĩa trong `18-Observability_orchestration_conventions` §7.6.
 
 ### 9.1 Alerts must be actionable / Alert phải có thể hành động được
 

@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import numpy as np
@@ -6,7 +5,8 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from .ddl import ensure_monitoring_schema, DEFAULT_SCHEMA
+from .ddl import DEFAULT_SCHEMA, ensure_monitoring_schema
+
 
 def score_stats(scores: np.ndarray) -> dict:
     s = np.asarray(scores, dtype=float)
@@ -19,6 +19,7 @@ def score_stats(scores: np.ndarray) -> dict:
         "p90": float(np.quantile(s, 0.90)),
         "p99": float(np.quantile(s, 0.99)),
     }
+
 
 def upsert_score_drift(
     engine: Engine,

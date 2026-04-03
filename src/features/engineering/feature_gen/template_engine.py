@@ -1,19 +1,20 @@
 """
 Template loading and rendering engine. Handles SQL template loading, caching, and placeholder replacement.
 """
+
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parents[1]
-SQL_DIR = BASE / 'database' / 'sql'
+SQL_DIR = BASE / "database" / "sql"
 
 # Cache templates in memory for reuse
 _TEMPLATE_CACHE = {}
 
 TEMPLATE_PATHS = {
-    'lifetime_aggregate': SQL_DIR / 'data_static' / 'lifetime_aggregate.sql',
-    'lifetime_table': SQL_DIR / 'data_static' / 'lifetime_template.sql',
-    'sliding_aggregate': SQL_DIR / 'data_window' / 'sliding_aggregate.sql',
-    'sliding_table': SQL_DIR / 'data_window' / 'sliding_template.sql'
+    "lifetime_aggregate": SQL_DIR / "data_static" / "lifetime_aggregate.sql",
+    "lifetime_table": SQL_DIR / "data_static" / "lifetime_template.sql",
+    "sliding_aggregate": SQL_DIR / "data_window" / "sliding_aggregate.sql",
+    "sliding_table": SQL_DIR / "data_window" / "sliding_template.sql",
 }
 
 
@@ -23,14 +24,14 @@ def get_template(name: str) -> str:
         path = TEMPLATE_PATHS.get(name)
         if not path:
             raise ValueError(f"Unknown template: {name}")
-        _TEMPLATE_CACHE[name] = path.read_text(encoding='utf-8')
+        _TEMPLATE_CACHE[name] = path.read_text(encoding="utf-8")
     return _TEMPLATE_CACHE[name]
 
 
 def render_template(name: str, **kwargs) -> str:
     template = get_template(name)
     # Build replacement dict once to avoid redundant dictionary lookups
-    replacements = {'{' + k + '}': str(v) for k, v in kwargs.items()}
+    replacements = {"{" + k + "}": str(v) for k, v in kwargs.items()}
     for placeholder, value in replacements.items():
         template = template.replace(placeholder, value)
     return template

@@ -11,7 +11,6 @@ Convention: 13-Data_ML §9.2 — explicit step boundaries.
 from __future__ import annotations
 
 import logging
-import pickle
 import traceback
 from pathlib import Path
 
@@ -21,10 +20,8 @@ from sqlalchemy.engine import Engine
 from data.preprocessing.dataset_prep.pipeline_config import DatasetPipelineConfig
 from data.preprocessing.dataset_prep.run_dataset_pipeline import (
     run_dataset_pipeline,
-    save_pipeline_artifacts,
 )
-from data.preprocessing.dataset_prep.sample_weighting import DatasetResult
-from modeling.common.artifacts import save_bundle, load_bundle
+from modeling.common.artifacts import load_bundle, save_bundle
 from modeling.config.model_config import ModelConfig
 from modeling.config_store.best_config import (
     ensure_best_config_table,
@@ -77,7 +74,8 @@ def run_monthly_v2(
     model_config.validate()
 
     if bundle_dir is None:
-        from modeling.config.paths import CHURN_MODEL_DIR
+        from modeling.config.paths import CHURN_MODEL_DIR  # Lazy: avoid import at module level when env var may not be set yet
+
         bundle_dir = CHURN_MODEL_DIR / "bundles" / "latest"
     bundle_dir = Path(bundle_dir)
     bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -99,7 +97,9 @@ def run_monthly_v2(
 
         logger.info(
             "Dataset ready: train=%d, eval=%d, predict=%d, features=%d",
-            len(ds.x_train), len(ds.x_eval), len(ds.x_predict),
+            len(ds.x_train),
+            len(ds.x_eval),
+            len(ds.x_predict),
             len(ds.feature_names),
         )
 
@@ -120,8 +120,8 @@ def run_monthly_v2(
         logger.info("STEP 4/8: Guardrail check")
         passed, guardrail_msg = check_guardrail(
             metrics,
-            min_f2=model_config.min_f2,
-            min_roc_auc=model_config.min_roc_auc,
+            min_f05=model_config.min_f1,  # use legacy config attribute for F0.5
+            min_pr_auc=model_config.min_pr_auc,
         )
         summary["guardrail_passed"] = passed
         summary["guardrail_msg"] = guardrail_msg
@@ -135,29 +135,43 @@ def run_monthly_v2(
         logger.info("=" * 70)
         logger.info("STEP 5/8: Accept/Reject decision")
 
-        prev_f2 = None
+        prev_f05 = None
         try:
             prev_cfg = load_latest_accepted_best_config(engine, horizon=horizon)
-            prev_f2 = float(prev_cfg.get("metric_f2_val", 0))
-        except Exception:
-            pass
+            prev_f05 = float(prev_cfg.get("metric_f1_val", 0))  # read legacy column
+        except ValueError:
+            logger.info("No previous accepted model found for horizon=%s. Using baseline logic.", horizon)
+        except Exception as e:
+            logger.warning("Unexpected error loading previous config: %s", e)
 
         accepted, rule = check_accept_reject(
-            metrics["f2"], prev_f2, eps=model_config.f2_improve_eps,
+            metrics["f05"],
+            prev_f05,
+            eps=model_config.f1_improve_eps,
         )
         summary["accepted"] = accepted
         summary["accept_rule"] = rule
 
         # Store config (accepted or rejected)
+
+        # as_of_month is stored as YYMM integer (e.g. 2512)
+        current_yymm = int(pd.Timestamp("today").strftime("%y%m"))
+
         config_record = {
+            "as_of_month": current_yymm,
             "horizon": horizon,
-            "metric_f2_val": metrics["f2"],
-            "metric_roc_auc_val": metrics["roc_auc"],
-            "threshold": metrics["threshold"],
+            "best_k": 0,
+            "use_static": True,
+            "best_threshold": metrics["threshold"],
+            "best_spw": 1.0,
+            "metric_f1_val": metrics["f05"],  # Store F0.5 in legacy F1 column
+            "metric_pr_auc_val": metrics["pr_auc"],
+            "val_month": None,
+            "target_month": None,
             "is_accepted": accepted,
             "accept_rule": rule,
-            "prev_accepted_f2": prev_f2,
-            "accepted_at": pd.Timestamp.utcnow().to_pydatetime(),
+            "prev_accepted_f1": prev_f05,
+            "accepted_at": pd.Timestamp.utcnow().isoformat(),
             "notes": f"v2 pipeline; features={len(ds.feature_names)}",
         }
         upsert_best_config(engine, config_record)
@@ -205,9 +219,10 @@ def run_monthly_v2(
         logger.info("=" * 70)
         logger.info("STEP 8/8: Export risk predictions")
         n_inserted = insert_predictions(
-            engine, scored_df,
+            engine,
+            scored_df,
             threshold=threshold,
-            w_star=None,  # TODO: pass from pipeline artifacts
+            w_star=None,  # Deferred: w_star not yet tracked in v2 pipeline artifacts (non-blocking)
             horizon=horizon,
         )
         summary["n_inserted"] = n_inserted
@@ -226,7 +241,8 @@ def run_monthly_v2(
         summary["error"] = f"{type(exc).__name__}: {exc}"
         logger.error(
             "Pipeline failed: %s\n%s",
-            exc, traceback.format_exc(limit=5),
+            exc,
+            traceback.format_exc(limit=5),
         )
         raise
 

@@ -31,7 +31,8 @@ config/.env.*
 
 # ── Data & Artifacts (.gitignored) ─────
 artifacts/
-data/
+/data/                  # root-level data/ only (CSV từ DE, local dev)
+!src/data/              # KEEP: src/data/ là Python source code
 logs/
 *.pkl
 *.joblib
@@ -39,6 +40,14 @@ logs/
 *.onnx
 *.parquet
 *.csv
+*.xls
+*.xlsx
+*.xlsm
+*.xlsb
+*.xlxs
+*.zip
+*.rar
+*.7z
 
 # ── ML experiment tracking ─────────────
 mlruns/

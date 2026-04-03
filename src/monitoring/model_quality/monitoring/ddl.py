@@ -1,10 +1,10 @@
-
 from __future__ import annotations
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 DEFAULT_SCHEMA = "ml_monitor"
+
 
 def ensure_monitoring_schema(engine: Engine, schema: str = DEFAULT_SCHEMA) -> None:
     """

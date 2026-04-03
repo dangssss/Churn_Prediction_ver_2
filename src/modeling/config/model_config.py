@@ -46,9 +46,7 @@ class ModelConfig:
     reg_lambda: float = 1.0
 
     # ── Evaluation ────────────────────────────────────────
-    eval_metric: list[str] = field(
-        default_factory=lambda: ["logloss", "auc"]
-    )
+    eval_metric: list[str] = field(default_factory=lambda: ["logloss", "aucpr"])
     scale_pos_weight: float = 1.0
 
     # ── Guardrail thresholds ──────────────────────────────
@@ -70,25 +68,15 @@ class ModelConfig:
         if self.max_depth < 1:
             raise ValueError(f"max_depth must be >= 1, got {self.max_depth}")
         if not (0 < self.learning_rate <= 1):
-            raise ValueError(
-                f"learning_rate must be in (0, 1], got {self.learning_rate}"
-            )
+            raise ValueError(f"learning_rate must be in (0, 1], got {self.learning_rate}")
         if self.n_estimators < 1:
-            raise ValueError(
-                f"n_estimators must be >= 1, got {self.n_estimators}"
-            )
+            raise ValueError(f"n_estimators must be >= 1, got {self.n_estimators}")
         if not (0 < self.subsample <= 1):
-            raise ValueError(
-                f"subsample must be in (0, 1], got {self.subsample}"
-            )
+            raise ValueError(f"subsample must be in (0, 1], got {self.subsample}")
         if not (0 < self.colsample_bytree <= 1):
-            raise ValueError(
-                f"colsample_bytree must be in (0, 1], got {self.colsample_bytree}"
-            )
+            raise ValueError(f"colsample_bytree must be in (0, 1], got {self.colsample_bytree}")
         if not (0 <= self.risk_threshold_pct <= 100):
-            raise ValueError(
-                f"risk_threshold_pct must be in [0, 100], got {self.risk_threshold_pct}"
-            )
+            raise ValueError(f"risk_threshold_pct must be in [0, 100], got {self.risk_threshold_pct}")
 
     def to_xgb_params(self) -> dict:
         """Convert to XGBoost parameter dict."""

@@ -1,7 +1,7 @@
 """CLI entry point for monthly v2 pipeline.
 
 Usage (from Docker / Airflow BashOperator):
-    python -m modeling.pipeline.monthly_v2_cli
+    python -m pipelines.monthly.monthly_v2_cli
 
 Convention: 01-Structure §6.2 — thin CLI, delegates to application layer.
 Convention: 08-Security §3 — credentials from env vars only.
@@ -31,28 +31,41 @@ def main() -> int:
         Exit code: 0 on success, 1 on failure.
     """
     try:
-        from shared.db import get_engine
-        from pipelines.monthly.monthly_v2 import run_monthly_v2
+        from dotenv import load_dotenv
+
+        load_dotenv()
+
+        from config.db_config import PostgresConfig
         from data.preprocessing.dataset_prep.pipeline_config import DatasetPipelineConfig
+        from pipelines.monthly.monthly_v2 import run_monthly_v2
+        from shared.db import get_engine
 
         logger.info("=" * 70)
         logger.info("Monthly Churn Pipeline v2 — Starting")
         logger.info("=" * 70)
 
-        # ── Read config from env vars ──────────────────────
+        # ── Load DB config ─────────────────────────────────
+        db_cfg = PostgresConfig.from_env()
+        engine = get_engine(db_cfg)
+
+        # ── Read pipeline config from env vars ─────────────
         cskh_path = os.environ.get("CSKH_FILE_PATH")
-        if cskh_path:
+        cskh_dir = os.environ.get("CSKH_DIR")
+
+        if cskh_dir:
+            logger.info("CSKH directory: %s", cskh_dir)
+        elif cskh_path:
             logger.info("CSKH file: %s", cskh_path)
         else:
-            logger.warning("CSKH_FILE_PATH not set — eval set will be empty!")
+            logger.warning("No CSKH_DIR or CSKH_FILE_PATH set — will try DB or fallback")
 
         pipeline_config = DatasetPipelineConfig(
             cskh_file_path=Path(cskh_path) if cskh_path else None,
+            cskh_dir=Path(cskh_dir) if cskh_dir else None,
         )
 
         bundle_dir = os.environ.get("CHURN_MODEL_DIR")
 
-        engine = get_engine()
         summary = run_monthly_v2(
             engine,
             pipeline_config=pipeline_config,
@@ -63,10 +76,7 @@ def main() -> int:
         logger.info("Pipeline result: %s", summary.get("status", "unknown"))
 
         # Log summary as JSON for Airflow log parsing
-        safe_summary = {
-            k: v for k, v in summary.items()
-            if isinstance(v, (str, int, float, bool, type(None)))
-        }
+        safe_summary = {k: v for k, v in summary.items() if isinstance(v, (str, int, float, bool, type(None)))}
         logger.info("Summary: %s", json.dumps(safe_summary, default=str))
 
         if summary.get("status") == "success":
