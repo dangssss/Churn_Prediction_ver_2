@@ -1,5 +1,5 @@
 import pandas as pd
-from template_engine import render_template
+from features.engineering.feature_gen.template_engine import render_template
 
 from features.engineering.feature_gen.db_utils import build_bccp_src
 from shared.logging_config import get_logger

@@ -8,7 +8,7 @@ Schedule: None (triggered by ds_churn_ingest)
 from __future__ import annotations
 
 from airflow import DAG
-from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
 from kubernetes.client import models as k8s
 from pendulum import datetime

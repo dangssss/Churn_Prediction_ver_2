@@ -45,6 +45,9 @@ COPY --from=builder --chown=appuser:appgroup /root/.local /home/appuser/.local
 # Copy application source code
 COPY --chown=appuser:appgroup src/ ./src/
 
+# Ensure logs directory exists and appuser has permissions for /app
+RUN mkdir -p /app/logs && chown -R appuser:appgroup /app
+
 USER appuser
 
 # Healthcheck for standalone process (Rule 4.1 - Observable Orchestration)

@@ -120,7 +120,13 @@ grafana:
     accessModes:
       - ReadWriteOnce
     size: 2Gi
-
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      folder: /var/lib/grafana/dashboards
+      searchNamespace: monitoring
 # ============================================================
 # Prometheus
 # Fix: limits phải nằm trong resources, không phải ngang cấp

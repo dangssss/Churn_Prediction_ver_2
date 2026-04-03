@@ -9,7 +9,7 @@ Hệ thống được thiết kế theo chuẩn phân tách Microservices, mỗi
 | Dịch vụ | Chức năng cốt lõi | Namespace K8s | Port nội bộ | Lệnh Port-forward truy cập (PowerShell) |
 | :--- | :--- | :--- | :--- | :--- |
 | **Airflow Web UI** | Quản lý / Trigger Task, xem Log | `default` | `8080/TCP` | `kubectl port-forward svc/airflow-api-server 8080:8080 -n default` |
-| **Grafana UI** | Giao diện Vẽ Biểu đồ (Mắt thần) | `monitoring` | `80/TCP` | `kubectl port-forward svc/monitoring-grafana 3000:80 -n monitoring` *(User: admin/admin)* |
+| **Grafana UI** | Giao diện Vẽ Biểu đồ (Mắt thần) | `monitoring` | `80/TCP` | `kubectl port-forward svc/monitoring-grafana 3000:80 -n monitoring` *(User: admin/dmst_ai)* |
 | **Prometheus DB** | Lưu trữ số liệu thô (Metrics) / Test PromQL | `monitoring` | `9090/TCP` | `kubectl port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090 -n monitoring` |
 
 ---
