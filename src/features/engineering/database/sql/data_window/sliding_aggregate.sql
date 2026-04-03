@@ -1,7 +1,6 @@
-CREATE INDEX IF NOT EXISTS idx_cas_customer_code_month ON public.cas_customer(cms_code_enc, report_month);
-CREATE INDEX IF NOT EXISTS idx_cas_customer_month_range ON public.cas_customer(report_month);
-CREATE INDEX IF NOT EXISTS idx_cms_complaint_code_date ON public.cms_complaint(cms_code_enc, create_complaint_date);
-CREATE INDEX IF NOT EXISTS idx_cms_complaint_date_range ON public.cms_complaint(create_complaint_date);
+-- NOTE: Source table indexes (cas_customer, cms_complaint) are created
+-- once by window_aggregation.py before the batch INSERT loop.
+-- Do NOT add CREATE INDEX statements here — they would run N times.
 
 WITH cms AS (
     SELECT *

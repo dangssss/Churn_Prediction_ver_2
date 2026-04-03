@@ -1,7 +1,7 @@
 import pandas as pd
-from features.engineering.feature_gen.template_engine import render_template
+from sqlalchemy import inspect, text
 
-from features.engineering.feature_gen.db_utils import build_bccp_src
+from features.engineering.feature_gen.template_engine import render_template
 from shared.logging_config import get_logger
 
 logger = get_logger("window_aggregation")
@@ -14,10 +14,47 @@ def build_relative_suffix(month_offset: int) -> str:
     return f"{month_offset}m_ago"
 
 
+def _build_bccp_src_from_cache(all_tables: set, start_date: str, end_date: str) -> str:
+    """Build BCCP UNION ALL source using pre-cached table list.
+
+    Avoids calling inspect(engine) on every invocation — the table set
+    is fetched once and reused across all window specs.
+    """
+    start = pd.to_datetime(start_date)
+    end = pd.to_datetime(end_date)
+    months = pd.date_range(start, end, freq="MS")
+
+    selects = []
+    for m in months:
+        tbl = f"bccp_orderitem_{m.strftime('%y%m')}"
+        if tbl in all_tables:
+            selects.append(f"SELECT * FROM public.{tbl}")
+
+    if not selects:
+        logger.warning(f"No bccp_orderitem tables found for {start_date} to {end_date}, using fallback")
+        return "public.bccp_orderitem"
+
+    return "(" + " UNION ALL ".join(selects) + ") AS bccp"
+
+
 def render_and_run_all(engine, months, window_sizes):
     logger.info(f"Starting window feature aggregation ({len(window_sizes)} sizes × {len(months)} months)")
 
     default_start = pd.Timestamp("2025-01-01")
+
+    # ── OPT-1: Cache bccp table list ONCE (avoids N×inspect() calls) ──
+    inspector = inspect(engine)
+    all_tables = set(inspector.get_table_names(schema="public"))
+    logger.debug(f"Cached {len(all_tables)} public table names for bccp lookup")
+
+    # ── OPT-2: Create source table indexes ONCE before loop ──
+    logger.info("Creating source table indexes (one-time)...")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cas_customer_code_month ON public.cas_customer(cms_code_enc, report_month)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cas_customer_month_range ON public.cas_customer(report_month)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cms_complaint_code_date ON public.cms_complaint(cms_code_enc, create_complaint_date)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cms_complaint_date_range ON public.cms_complaint(create_complaint_date)"))
+    logger.info("Source table indexes ready")
 
     # Pre-generate all window specs to avoid repeated computation
     window_specs = []
@@ -52,7 +89,7 @@ def render_and_run_all(engine, months, window_sizes):
 
     for idx, spec in enumerate(window_specs, 1):
         create_sql, insert_sql = _render_window_sqls(
-            engine,
+            all_tables,
             spec["table_name"],
             spec["start_date"],
             spec["end_date"],
@@ -75,8 +112,8 @@ def render_and_run_all(engine, months, window_sizes):
     for batch_idx in range(0, len(all_sql_pairs), batch_size):
         batch = all_sql_pairs[batch_idx : batch_idx + batch_size]
         with engine.begin() as conn:
-            for table_name, _, insert_sql in batch:
-                idx = all_sql_pairs.index((table_name, _, insert_sql)) + 1
+            for batch_offset, (table_name, _, insert_sql) in enumerate(batch):
+                idx = batch_idx + batch_offset + 1
                 logger.info(f"  [{idx}/{total}] {table_name}...")
                 try:
                     conn.exec_driver_sql(insert_sql)
@@ -88,9 +125,14 @@ def render_and_run_all(engine, months, window_sizes):
 
 
 def _render_window_sqls(
-    engine, table_name: str, start_date: str, end_date: str, start_ym: str, end_ym: str, window_size: int
+    all_tables: set, table_name: str, start_date: str, end_date: str,
+    start_ym: str, end_ym: str, window_size: int,
 ):
-    """Pre-render both CREATE and INSERT SQL (cached BCCP lookups)."""
+    """Pre-render both CREATE and INSERT SQL.
+
+    Uses pre-cached ``all_tables`` set instead of calling
+    ``inspect(engine)`` on every invocation.
+    """
     start = pd.to_datetime(start_date)
     end = pd.to_datetime(end_date)
     months = pd.date_range(start, end, freq="MS")
@@ -154,10 +196,10 @@ def _render_window_sqls(
     monthly_select_str = ", ".join(select_parts)
     monthly_insert_cols_str = ", ".join(insert_parts)
 
-    # Build bccp_src once (expensive operation)
-    bccp_src = build_bccp_src(engine, start_date, end_date)
+    # Build bccp_src from cached table list (no inspect() call)
+    bccp_src = _build_bccp_src_from_cache(all_tables, start_date, end_date)
 
-    # Execute both CREATE and INSERT in single transaction
+    # Render CREATE and INSERT SQL
     table_safe = table_name.replace(".", "_")
     create_sql = render_template(
         "sliding_table", TABLE_NAME=table_name, TABLE_SAFE=table_safe, MONTHLY_COLUMNS=monthly_cols_str
