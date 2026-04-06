@@ -15,6 +15,9 @@ scikit-learn==1.7.2
 xgboost
 joblib
 
+# --- Visualization ---
+matplotlib>=3.8
+
 # --- Utilities ---
 python-dotenv==1.0.1
 python-dateutil
