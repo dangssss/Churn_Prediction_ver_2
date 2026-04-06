@@ -1,55 +1,21 @@
--- NOTE: Source table indexes (cas_customer, cms_complaint) are created
--- once by window_aggregation.py before the batch INSERT loop.
--- Do NOT add CREATE INDEX statements here — they would run N times.
+-- ============================================================================
+-- OPTIMIZED sliding_aggregate.sql
+-- ============================================================================
+-- Reads from TEMP staging tables (_stg_monthly, _stg_complaint, _stg_bccp)
+-- created ONCE by window_aggregation.py before the batch INSERT loop.
+--
+-- Key optimizations vs original:
+--   1. No direct scan of cas_customer, cms_complaint, bccp_orderitem per window
+--   2. monthly_sums includes ALL columns → no re-join in base_agg (GP-4)
+--   3. slopes reads from monthly_sums instead of monthly_metrics (GP-4)
+--   4. complaint_stats and bccp_stats read from staging tables (GP-1)
+-- ============================================================================
 
-WITH cms AS (
+WITH monthly_sums AS (
+    -- Filter pre-aggregated staging data for this window's date range
     SELECT *
-    FROM public.cas_customer
+    FROM data_window._stg_monthly
     WHERE report_month >= DATE '{START_DATE}' AND report_month <= DATE '{END_DATE}'
-),
-
-monthly_metrics AS (
-    SELECT
-        cms_code_enc,
-        to_char(report_month, 'YYMM') AS month_key,
-        to_char(report_month, 'YYMM')::bigint AS month_key_num,
-        report_month,
-        item_count,
-        total_fee,
-        total_complaint,
-        delay_count,
-        delay_day,
-        nodone,
-        refunded,
-        noaccepted,
-        lost_order,
-        intra_province,
-        international,
-        order_score,
-        satisfaction_score,
-        weight_kg,
-        lastday,
-        ser_c, ser_e, ser_m, ser_p, ser_r, ser_u, ser_l, ser_q
-    FROM cms
-),
-
-monthly_sums AS (
-    -- Single-pass pre-aggregation: all metrics grouped by customer+month
-    SELECT
-        cms_code_enc,
-        month_key,
-        month_key_num,
-        SUM(item_count)::bigint AS item_sum,
-        SUM(total_fee)::bigint AS revenue_sum,
-        SUM(total_complaint)::bigint AS complaint_sum,
-        SUM(delay_count)::bigint AS delay_sum,
-        SUM(nodone)::bigint AS nodone_sum,
-        AVG(order_score)::double precision AS order_score_avg,
-        AVG(satisfaction_score)::double precision AS satisfaction_avg,
-        COUNT(*)::int AS month_record_count,
-        COUNT(CASE WHEN total_complaint > 0 THEN 1 END)::int AS months_with_complaint
-    FROM monthly_metrics
-    GROUP BY cms_code_enc, month_key, month_key_num
 ),
 
 monthly_pivoted AS (
@@ -60,7 +26,7 @@ monthly_pivoted AS (
     GROUP BY cms_code_enc
 ),
 
--- Month extremes: use window functions instead of correlated subqueries (50x faster)
+-- Month extremes: window functions to find peak/trough months
 month_extremes AS (
     SELECT
         cms_code_enc,
@@ -98,12 +64,12 @@ month_extremes AS (
     GROUP BY cms_code_enc
 ),
 
--- Core aggregations: single pass using pre-aggregated monthly_sums (avoids re-aggregation)
+-- Core aggregations: single pass over monthly_sums only (NO re-join to raw data)
 base_agg AS (
     SELECT
         ms.cms_code_enc,
         COUNT(*) AS month_count,
-        
+
         -- Item metrics
         SUM(ms.item_sum)::bigint AS item_sum,
         AVG(ms.item_sum)::double precision AS item_avg,
@@ -111,7 +77,7 @@ base_agg AS (
         percentile_cont(0.5) WITHIN GROUP (ORDER BY ms.item_sum) AS item_median,
         MAX(ms.item_sum)::bigint AS item_max,
         MIN(ms.item_sum)::bigint AS item_min,
-        
+
         -- Revenue metrics
         SUM(ms.revenue_sum)::bigint AS revenue_sum,
         AVG(ms.revenue_sum)::double precision AS revenue_avg,
@@ -119,89 +85,87 @@ base_agg AS (
         percentile_cont(0.5) WITHIN GROUP (ORDER BY ms.revenue_sum) AS revenue_median,
         MAX(ms.revenue_sum)::bigint AS revenue_max,
         MIN(ms.revenue_sum)::bigint AS revenue_min,
-        
+
         -- Complaint metrics
         SUM(ms.complaint_sum)::bigint AS complaint_sum,
         AVG(ms.complaint_sum)::double precision AS complaint_avg,
         STDDEV_POP(ms.complaint_sum)::double precision AS complaint_std,
         percentile_cont(0.5) WITHIN GROUP (ORDER BY ms.complaint_sum) AS complaint_median,
         SUM(ms.months_with_complaint)::int AS months_with_complaint_ct,
-        
-        -- Weight metrics (from monthly_metrics, needed for per-item ratios)
-        SUM(mm.weight_kg)::double precision AS weight_sum,
-        AVG(mm.weight_kg)::double precision AS weight_avg,
-        STDDEV_POP(mm.weight_kg)::double precision AS weight_std,
-        
-        -- Delay & completion
+
+        -- Weight metrics (from staging — no re-join needed)
+        SUM(ms.weight_sum)::double precision AS weight_sum,
+        AVG(ms.weight_sum)::double precision AS weight_avg,
+        STDDEV_POP(ms.weight_sum)::double precision AS weight_std,
+
+        -- Delay & completion (from staging — no re-join needed)
         SUM(ms.delay_sum)::double precision AS delay_sum,
         SUM(CASE WHEN ms.delay_sum > 0 THEN 1 END)::int AS delay_count_ct,
-        SUM(mm.delay_day)::double precision AS delay_day_sum,
-        SUM(mm.refunded)::double precision AS refund_sum,
-        SUM(mm.noaccepted)::double precision AS noaccepted_sum,
-        SUM(mm.lost_order)::double precision AS lost_sum,
+        SUM(ms.delay_day_sum)::double precision AS delay_day_sum,
+        SUM(ms.refund_sum)::double precision AS refund_sum,
+        SUM(ms.noaccepted_sum)::double precision AS noaccepted_sum,
+        SUM(ms.lost_sum)::double precision AS lost_sum,
         SUM(ms.nodone_sum)::double precision AS nodone_sum,
-        
-        -- Geography
-        SUM(mm.intra_province)::double precision AS intra_prov_sum,
-        SUM(mm.international)::double precision AS intl_sum,
-        
-        -- Quality scores (from monthly_sums)
+
+        -- Geography (from staging — no re-join needed)
+        SUM(ms.intra_prov_sum)::double precision AS intra_prov_sum,
+        SUM(ms.intl_sum)::double precision AS intl_sum,
+
+        -- Quality scores
         AVG(ms.order_score_avg)::double precision AS order_score_avg,
         STDDEV_POP(ms.order_score_avg)::double precision AS order_score_std,
         AVG(ms.satisfaction_avg)::double precision AS satisfaction_avg,
         STDDEV_POP(ms.satisfaction_avg)::double precision AS satisfaction_std,
-        
+
         -- Activity
         COUNT(DISTINCT CASE WHEN ms.item_sum > 0 THEN ms.month_key END)::int AS active_months,
-        AVG(mm.lastday)::double precision AS avg_lastday,
-        
-        -- Services (from monthly_metrics)
-        SUM(mm.ser_c)::bigint AS ser_c_sum,
-        SUM(mm.ser_e)::bigint AS ser_e_sum,
-        SUM(mm.ser_m)::bigint AS ser_m_sum,
-        SUM(mm.ser_p)::bigint AS ser_p_sum,
-        SUM(mm.ser_r)::bigint AS ser_r_sum,
-        SUM(mm.ser_u)::bigint AS ser_u_sum,
-        SUM(mm.ser_l)::bigint AS ser_l_sum,
-        SUM(mm.ser_q)::bigint AS ser_q_sum
+        AVG(ms.avg_lastday)::double precision AS avg_lastday,
+
+        -- Services (from staging — no re-join needed)
+        SUM(ms.ser_c)::bigint AS ser_c_sum,
+        SUM(ms.ser_e)::bigint AS ser_e_sum,
+        SUM(ms.ser_m)::bigint AS ser_m_sum,
+        SUM(ms.ser_p)::bigint AS ser_p_sum,
+        SUM(ms.ser_r)::bigint AS ser_r_sum,
+        SUM(ms.ser_u)::bigint AS ser_u_sum,
+        SUM(ms.ser_l)::bigint AS ser_l_sum,
+        SUM(ms.ser_q)::bigint AS ser_q_sum
     FROM monthly_sums ms
-    LEFT JOIN monthly_metrics mm ON mm.cms_code_enc = ms.cms_code_enc 
-        AND to_char(mm.report_month, 'YYMM') = ms.month_key
     GROUP BY ms.cms_code_enc
 ),
 
--- Complaint analysis
+-- Complaint analysis (from staging table)
 complaint_stats AS (
     SELECT
         cms_code_enc,
         COUNT(DISTINCT complaint_code)::int AS complaint_diversity,
         MODE() WITHIN GROUP (ORDER BY complaint_code)::int AS most_common_complaint
-    FROM public.cms_complaint
+    FROM data_window._stg_complaint
     WHERE create_complaint_date >= DATE '{START_DATE}' AND create_complaint_date <= DATE '{END_DATE}'
     GROUP BY cms_code_enc
 ),
 
--- BCCP activity (simplified - no nested CTEs)
+-- BCCP activity (from staging table)
 bccp_stats AS (
     SELECT
         cms_code_enc,
-        COUNT(DISTINCT DATE(sending_time))::int AS active_days,
+        COUNT(DISTINCT send_date)::int AS active_days,
         (DATE '{END_DATE}'::date - DATE '{START_DATE}'::date + 1)::int AS window_days,
-        (DATE '{END_DATE}'::date - MAX(DATE(sending_time)))::int AS recency_days
-    FROM {BCCP_SRC}
-    WHERE sending_time >= DATE '{START_DATE}' AND sending_time <= DATE '{END_DATE}'
+        (DATE '{END_DATE}'::date - MAX(send_date))::int AS recency_days
+    FROM data_window._stg_bccp
+    WHERE send_date >= DATE '{START_DATE}' AND send_date <= DATE '{END_DATE}'
     GROUP BY cms_code_enc
 ),
 
--- Slopes
+-- Slopes (from monthly_sums — no re-scan of raw data)
 slopes AS (
     SELECT
         cms_code_enc,
-        COALESCE(regr_slope(item_count, EXTRACT(epoch FROM report_month)), 0)::double precision AS item_slope,
-        COALESCE(regr_slope(total_fee, EXTRACT(epoch FROM report_month)), 0)::double precision AS revenue_slope,
-        COALESCE(regr_slope(satisfaction_score, EXTRACT(epoch FROM report_month)), 0)::double precision AS satisfy_slope,
-        COALESCE(regr_slope(total_complaint, EXTRACT(epoch FROM report_month)), 0)::double precision AS complaint_slope
-    FROM monthly_metrics
+        COALESCE(regr_slope(item_sum, EXTRACT(epoch FROM report_month)), 0)::double precision AS item_slope,
+        COALESCE(regr_slope(revenue_sum, EXTRACT(epoch FROM report_month)), 0)::double precision AS revenue_slope,
+        COALESCE(regr_slope(satisfaction_avg, EXTRACT(epoch FROM report_month)), 0)::double precision AS satisfy_slope,
+        COALESCE(regr_slope(complaint_sum, EXTRACT(epoch FROM report_month)), 0)::double precision AS complaint_slope
+    FROM monthly_sums
     GROUP BY cms_code_enc
 )
 
@@ -221,7 +185,7 @@ INSERT INTO {TABLE_NAME} (
     ser_c_sum, ser_e_sum, ser_m_sum, ser_p_sum, ser_r_sum, ser_u_sum, ser_l_sum, ser_q_sum,
     item_slope, revenue_slope, satisfy_slope, complaint_slope,
     cv_item, cv_revenue, item_range, revenue_range,
-    service_types_used, dominant_service, dominant_service_ratio, 
+    service_types_used, dominant_service, dominant_service_ratio,
     recency, frequency, monetary
 )
 SELECT
@@ -308,8 +272,8 @@ SELECT
         END,
         'E'
     )::varchar,
-    CASE WHEN (b.ser_c_sum + b.ser_e_sum + b.ser_m_sum + b.ser_p_sum + b.ser_r_sum + b.ser_u_sum + b.ser_l_sum + b.ser_q_sum) > 0 
-         THEN GREATEST(b.ser_c_sum, b.ser_e_sum, b.ser_m_sum, b.ser_p_sum, b.ser_r_sum, b.ser_u_sum, b.ser_l_sum, b.ser_q_sum)::double precision / 
+    CASE WHEN (b.ser_c_sum + b.ser_e_sum + b.ser_m_sum + b.ser_p_sum + b.ser_r_sum + b.ser_u_sum + b.ser_l_sum + b.ser_q_sum) > 0
+         THEN GREATEST(b.ser_c_sum, b.ser_e_sum, b.ser_m_sum, b.ser_p_sum, b.ser_r_sum, b.ser_u_sum, b.ser_l_sum, b.ser_q_sum)::double precision /
               (b.ser_c_sum + b.ser_e_sum + b.ser_m_sum + b.ser_p_sum + b.ser_r_sum + b.ser_u_sum + b.ser_l_sum + b.ser_q_sum)
          ELSE 0 END::double precision,
 

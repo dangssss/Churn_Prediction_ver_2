@@ -139,15 +139,22 @@ def run(args):
         logger.info(f"Date range: {len(months)} months ({start_date.date()} to {end_date.date()})")
         logger.info(f"Window sizes: {window_sizes}")
 
-        # Initialize schemas - batch in single transaction
-        logger.info("Recreating schemas...")
-        with engine.begin() as conn:
-            conn.execute(text("DROP SCHEMA IF EXISTS data_static CASCADE;"))
-            conn.execute(text("CREATE SCHEMA data_static;"))
-            conn.execute(text("DROP SCHEMA IF EXISTS data_window CASCADE;"))
-            conn.execute(text("CREATE SCHEMA data_window;"))
-            # Create static table in same transaction
-            conn.execute(text(DB_STATIC_SQL.read_text(encoding="utf-8")))
+        # Initialize schemas
+        incremental = getattr(args, "incremental", False)
+        if incremental:
+            logger.info("Incremental mode: preserving existing schemas")
+            with engine.begin() as conn:
+                conn.execute(text("CREATE SCHEMA IF NOT EXISTS data_static;"))
+                conn.execute(text("CREATE SCHEMA IF NOT EXISTS data_window;"))
+                conn.execute(text(DB_STATIC_SQL.read_text(encoding="utf-8")))
+        else:
+            logger.info("Full refresh: recreating schemas...")
+            with engine.begin() as conn:
+                conn.execute(text("DROP SCHEMA IF EXISTS data_static CASCADE;"))
+                conn.execute(text("CREATE SCHEMA data_static;"))
+                conn.execute(text("DROP SCHEMA IF EXISTS data_window CASCADE;"))
+                conn.execute(text("CREATE SCHEMA data_window;"))
+                conn.execute(text(DB_STATIC_SQL.read_text(encoding="utf-8")))
         logger.info("Schemas initialized")
 
         def run_lifetime(engine):
@@ -161,12 +168,12 @@ def run(args):
                     logger.error("Static feature table is empty! Check data_static aggregation.")
                     raise ValueError("Static feature table is empty!")
 
-        def run_sliding(engine, months, window_sizes):
+        def run_sliding(engine, months, window_sizes, incremental=False):
             logger.info("Aggregating window features...")
-            render_and_run_all(engine, months, window_sizes)
+            render_and_run_all(engine, months, window_sizes, incremental=incremental)
 
         run_lifetime(engine)
-        run_sliding(engine, months, window_sizes)
+        run_sliding(engine, months, window_sizes, incremental=incremental)
 
         engine.dispose()  # Clean up connection pool
 
@@ -188,5 +195,7 @@ if __name__ == "__main__":
     parser.add_argument("--start", default="2025-01-01", help="Start date YYYY-MM-DD")
     parser.add_argument("--end", default=None, help="End date YYYY-MM-DD")
     parser.add_argument("--database-url", default=None, help="Database URL")
+    parser.add_argument("--incremental", action="store_true",
+                        help="Skip schema recreation, only compute new windows")
     args = parser.parse_args()
     run(args)

@@ -1,3 +1,7 @@
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import pandas as pd
 from sqlalchemy import inspect, text
 
@@ -5,6 +9,14 @@ from features.engineering.feature_gen.template_engine import render_template
 from shared.logging_config import get_logger
 
 logger = get_logger("window_aggregation")
+
+# ── Configuration ──────────────────────────────────────────
+MAX_PARALLEL_WORKERS = 4  # Parallel INSERT workers (GP-3)
+
+# Staging table names (UNLOGGED for cross-connection visibility)
+_STG_MONTHLY = "data_window._stg_monthly"
+_STG_COMPLAINT = "data_window._stg_complaint"
+_STG_BCCP = "data_window._stg_bccp"
 
 
 def build_relative_suffix(month_offset: int) -> str:
@@ -14,49 +26,157 @@ def build_relative_suffix(month_offset: int) -> str:
     return f"{month_offset}m_ago"
 
 
-def _build_bccp_src_from_cache(all_tables: set, start_date: str, end_date: str) -> str:
-    """Build BCCP UNION ALL source using pre-cached table list.
+def _create_staging_tables(engine, global_start: str, bccp_tables: list[str]):
+    """Create UNLOGGED staging tables for the entire date range.
 
-    Avoids calling inspect(engine) on every invocation — the table set
-    is fetched once and reused across all window specs.
+    UNLOGGED tables are visible across all connections (needed for parallel
+    INSERT) and don't write WAL (fast). They are explicitly dropped at the
+    end of the pipeline via ``_cleanup_staging_tables()``.
+
+    Args:
+        engine: SQLAlchemy engine.
+        global_start: Earliest date to include (YYYY-MM-DD).
+        bccp_tables: Sorted list of bccp_orderitem table names.
     """
-    start = pd.to_datetime(start_date)
-    end = pd.to_datetime(end_date)
-    months = pd.date_range(start, end, freq="MS")
+    logger.info("Creating staging UNLOGGED tables (one-time source scan)...")
+    t0 = time.time()
 
-    selects = []
-    for m in months:
-        tbl = f"bccp_orderitem_{m.strftime('%y%m')}"
-        if tbl in all_tables:
-            selects.append(f"SELECT * FROM public.{tbl}")
+    with engine.begin() as conn:
+        # Drop any leftover staging from previous failed runs
+        conn.exec_driver_sql(f"DROP TABLE IF EXISTS {_STG_MONTHLY}")
+        conn.exec_driver_sql(f"DROP TABLE IF EXISTS {_STG_COMPLAINT}")
+        conn.exec_driver_sql(f"DROP TABLE IF EXISTS {_STG_BCCP}")
 
-    if not selects:
-        logger.warning(f"No bccp_orderitem tables found for {start_date} to {end_date}, using fallback")
-        return "public.bccp_orderitem"
+        # ── 1. _stg_monthly: pre-aggregated monthly sums with ALL columns ──
+        conn.exec_driver_sql(f"""
+            CREATE UNLOGGED TABLE {_STG_MONTHLY} AS
+            SELECT
+                cms_code_enc,
+                to_char(report_month, 'YYMM') AS month_key,
+                to_char(report_month, 'YYMM')::bigint AS month_key_num,
+                MIN(report_month) AS report_month,
+                SUM(item_count)::bigint AS item_sum,
+                SUM(total_fee)::bigint AS revenue_sum,
+                SUM(total_complaint)::bigint AS complaint_sum,
+                SUM(delay_count)::bigint AS delay_sum,
+                SUM(nodone)::bigint AS nodone_sum,
+                AVG(order_score)::double precision AS order_score_avg,
+                AVG(satisfaction_score)::double precision AS satisfaction_avg,
+                COUNT(*)::int AS month_record_count,
+                COUNT(CASE WHEN total_complaint > 0 THEN 1 END)::int AS months_with_complaint,
+                SUM(weight_kg)::double precision AS weight_sum,
+                SUM(delay_day)::double precision AS delay_day_sum,
+                SUM(refunded)::double precision AS refund_sum,
+                SUM(noaccepted)::double precision AS noaccepted_sum,
+                SUM(lost_order)::double precision AS lost_sum,
+                SUM(intra_province)::double precision AS intra_prov_sum,
+                SUM(international)::double precision AS intl_sum,
+                AVG(lastday)::double precision AS avg_lastday,
+                SUM(COALESCE(ser_c, 0))::bigint AS ser_c,
+                SUM(COALESCE(ser_e, 0))::bigint AS ser_e,
+                SUM(COALESCE(ser_m, 0))::bigint AS ser_m,
+                SUM(COALESCE(ser_p, 0))::bigint AS ser_p,
+                SUM(COALESCE(ser_r, 0))::bigint AS ser_r,
+                SUM(COALESCE(ser_u, 0))::bigint AS ser_u,
+                SUM(COALESCE(ser_l, 0))::bigint AS ser_l,
+                SUM(COALESCE(ser_q, 0))::bigint AS ser_q
+            FROM public.cas_customer
+            WHERE report_month >= DATE '{global_start}'
+            GROUP BY cms_code_enc, to_char(report_month, 'YYMM'), to_char(report_month, 'YYMM')::bigint
+        """)
+        conn.exec_driver_sql(f"CREATE INDEX ON {_STG_MONTHLY} (cms_code_enc, month_key)")
+        conn.exec_driver_sql(f"CREATE INDEX ON {_STG_MONTHLY} (report_month)")
+        conn.exec_driver_sql(f"ANALYZE {_STG_MONTHLY}")
 
-    return "(" + " UNION ALL ".join(selects) + ") AS bccp"
+        stg_count = conn.exec_driver_sql(f"SELECT COUNT(*) FROM {_STG_MONTHLY}").fetchone()[0]
+        logger.info(f"  _stg_monthly: {stg_count:,} rows")
+
+        # ── 2. _stg_complaint ──
+        conn.exec_driver_sql(f"""
+            CREATE UNLOGGED TABLE {_STG_COMPLAINT} AS
+            SELECT cms_code_enc, create_complaint_date, complaint_code
+            FROM public.cms_complaint
+            WHERE create_complaint_date >= DATE '{global_start}'
+        """)
+        conn.exec_driver_sql(
+            f"CREATE INDEX ON {_STG_COMPLAINT} (cms_code_enc, create_complaint_date)"
+        )
+        conn.exec_driver_sql(f"ANALYZE {_STG_COMPLAINT}")
+
+        cmp_count = conn.exec_driver_sql(f"SELECT COUNT(*) FROM {_STG_COMPLAINT}").fetchone()[0]
+        logger.info(f"  _stg_complaint: {cmp_count:,} rows")
+
+        # ── 3. _stg_bccp ──
+        if bccp_tables:
+            bccp_union = " UNION ALL ".join(
+                f"SELECT cms_code_enc, DATE(sending_time) AS send_date FROM public.{t}"
+                for t in bccp_tables
+            )
+            conn.exec_driver_sql(f"""
+                CREATE UNLOGGED TABLE {_STG_BCCP} AS
+                SELECT cms_code_enc, send_date
+                FROM ({bccp_union}) AS raw
+                WHERE send_date >= DATE '{global_start}'
+            """)
+        else:
+            conn.exec_driver_sql(f"""
+                CREATE UNLOGGED TABLE {_STG_BCCP} AS
+                SELECT cms_code_enc, DATE(sending_time) AS send_date
+                FROM public.bccp_orderitem
+                WHERE sending_time >= DATE '{global_start}'
+            """)
+        conn.exec_driver_sql(f"CREATE INDEX ON {_STG_BCCP} (cms_code_enc, send_date)")
+        conn.exec_driver_sql(f"ANALYZE {_STG_BCCP}")
+
+        bccp_count = conn.exec_driver_sql(f"SELECT COUNT(*) FROM {_STG_BCCP}").fetchone()[0]
+        logger.info(f"  _stg_bccp: {bccp_count:,} rows")
+
+    elapsed = time.time() - t0
+    logger.info(f"Staging tables created in {elapsed:.1f}s")
 
 
-def render_and_run_all(engine, months, window_sizes):
-    logger.info(f"Starting window feature aggregation ({len(window_sizes)} sizes × {len(months)} months)")
+def _cleanup_staging_tables(engine):
+    """Drop staging tables after pipeline completes."""
+    logger.info("Cleaning up staging tables...")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(f"DROP TABLE IF EXISTS {_STG_MONTHLY}")
+        conn.exec_driver_sql(f"DROP TABLE IF EXISTS {_STG_COMPLAINT}")
+        conn.exec_driver_sql(f"DROP TABLE IF EXISTS {_STG_BCCP}")
+    logger.info("Staging tables dropped")
+
+
+def _insert_one_window(engine, table_name: str, insert_sql: str, idx: int, total: int):
+    """Execute a single window INSERT on its own connection.
+
+    Each call gets its own connection from the pool, so multiple calls
+    can run in parallel without blocking each other.
+    """
+    t0 = time.time()
+    with engine.begin() as conn:
+        conn.exec_driver_sql(insert_sql)
+    elapsed = time.time() - t0
+    logger.info(f"  [{idx}/{total}] {table_name} ({elapsed:.1f}s)")
+
+
+def render_and_run_all(engine, months, window_sizes, incremental: bool = False):
+    logger.info(
+        f"Starting window feature aggregation "
+        f"({len(window_sizes)} sizes × {len(months)} months, "
+        f"incremental={incremental})"
+    )
 
     default_start = pd.Timestamp("2025-01-01")
 
-    # ── OPT-1: Cache bccp table list ONCE (avoids N×inspect() calls) ──
+    # ── Discover bccp tables ──
     inspector = inspect(engine)
     all_tables = set(inspector.get_table_names(schema="public"))
-    logger.debug(f"Cached {len(all_tables)} public table names for bccp lookup")
+    bccp_tables = sorted(
+        t for t in all_tables
+        if re.match(r"^bccp_orderitem_\d{4}$", t)
+    )
+    logger.debug(f"Found {len(bccp_tables)} bccp_orderitem tables")
 
-    # ── OPT-2: Create source table indexes ONCE before loop ──
-    logger.info("Creating source table indexes (one-time)...")
-    with engine.begin() as conn:
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cas_customer_code_month ON public.cas_customer(cms_code_enc, report_month)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cas_customer_month_range ON public.cas_customer(report_month)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cms_complaint_code_date ON public.cms_complaint(cms_code_enc, create_complaint_date)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cms_complaint_date_range ON public.cms_complaint(create_complaint_date)"))
-    logger.info("Source table indexes ready")
-
-    # Pre-generate all window specs to avoid repeated computation
+    # ── Pre-generate all window specs ──
     window_specs = []
     for window_size in window_sizes:
         for end_month in months:
@@ -81,57 +201,119 @@ def render_and_run_all(engine, months, window_sizes):
                 }
             )
 
-    logger.debug(f"Generated {len(window_specs)} window specifications")
-
-    # Batch: Pre-generate all SQL + create tables first (quick DDL pass)
-    all_sql_pairs = []
-    total = len(window_specs)
-
-    for idx, spec in enumerate(window_specs, 1):
-        create_sql, insert_sql = _render_window_sqls(
-            all_tables,
-            spec["table_name"],
-            spec["start_date"],
-            spec["end_date"],
-            spec["start_ym"],
-            spec["end_ym"],
-            spec["window_size"],
+    # ── GP-5: Incremental — skip existing windows ──
+    if incremental:
+        dw_tables = set(inspector.get_table_names(schema="data_window"))
+        # Exclude staging table names from the check
+        staging_names = {"_stg_monthly", "_stg_complaint", "_stg_bccp"}
+        dw_tables -= staging_names
+        original_count = len(window_specs)
+        window_specs = [
+            spec for spec in window_specs
+            if spec["table_name"].split(".")[-1] not in dw_tables
+        ]
+        skipped = original_count - len(window_specs)
+        logger.info(
+            f"Incremental: {original_count} total specs -> "
+            f"{len(window_specs)} new to compute ({skipped} skipped)"
         )
-        all_sql_pairs.append((spec["table_name"], create_sql, insert_sql))
+        if not window_specs:
+            logger.info("No new windows to compute. Skipping.")
+            return
 
-    # Execute: Batch create tables first (parallel-friendly prep work)
+    logger.info(f"Will compute {len(window_specs)} window specifications")
+
+    # ── Create source table indexes (one-time, idempotent) ──
+    logger.info("Ensuring source table indexes...")
     with engine.begin() as conn:
-        for table_name, create_sql, _ in all_sql_pairs:
-            try:
-                conn.exec_driver_sql(create_sql)
-            except Exception as e:
-                logger.warning(f"Table {table_name} creation failed: {e}")
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS idx_cas_customer_code_month "
+            "ON public.cas_customer(cms_code_enc, report_month)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS idx_cas_customer_month_range "
+            "ON public.cas_customer(report_month)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS idx_cms_complaint_code_date "
+            "ON public.cms_complaint(cms_code_enc, create_complaint_date)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS idx_cms_complaint_date_range "
+            "ON public.cms_complaint(create_complaint_date)"
+        )
 
-    # Then batch inserts in optimal transaction size (e.g., 5 per transaction)
-    batch_size = 5
-    for batch_idx in range(0, len(all_sql_pairs), batch_size):
-        batch = all_sql_pairs[batch_idx : batch_idx + batch_size]
+    # ── GP-1: Create staging UNLOGGED tables (ONE source scan) ──
+    global_start = default_start.strftime("%Y-%m-%d")
+    _create_staging_tables(engine, global_start, bccp_tables)
+
+    try:
+        # ── Render all SQL pairs ──
+        all_sql_pairs = []
+        for spec in window_specs:
+            create_sql, insert_sql = _render_window_sqls(
+                spec["table_name"],
+                spec["start_date"],
+                spec["end_date"],
+                spec["start_ym"],
+                spec["end_ym"],
+                spec["window_size"],
+            )
+            all_sql_pairs.append((spec["table_name"], create_sql, insert_sql))
+
+        # ── Create all target tables (sequential — DDL is fast) ──
         with engine.begin() as conn:
-            for batch_offset, (table_name, _, insert_sql) in enumerate(batch):
-                idx = batch_idx + batch_offset + 1
-                logger.info(f"  [{idx}/{total}] {table_name}...")
+            for table_name, create_sql, _ in all_sql_pairs:
                 try:
-                    conn.exec_driver_sql(insert_sql)
+                    conn.exec_driver_sql(create_sql)
                 except Exception as e:
-                    logger.error(f"Insert to {table_name} failed: {e}")
+                    logger.warning(f"Table {table_name} creation failed: {e}")
+
+        # ── GP-3: Parallel INSERT (each window to its own table) ──
+        total = len(all_sql_pairs)
+        t0 = time.time()
+
+        logger.info(
+            f"Starting parallel INSERT with {MAX_PARALLEL_WORKERS} workers "
+            f"({total} windows)..."
+        )
+
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_WORKERS) as pool:
+            futures = {}
+            for idx, (table_name, _, insert_sql) in enumerate(all_sql_pairs, 1):
+                future = pool.submit(
+                    _insert_one_window, engine, table_name, insert_sql, idx, total
+                )
+                futures[future] = table_name
+
+            # Wait for all and propagate any exceptions
+            for future in as_completed(futures):
+                table_name = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"INSERT failed for {table_name}: {e}")
                     raise
 
-    logger.info(f"Window feature aggregation complete ({total} windows)")
+        elapsed = time.time() - t0
+        logger.info(
+            f"Window feature aggregation complete: "
+            f"{total} windows in {elapsed:.1f}s "
+            f"({elapsed / max(total, 1):.1f}s/window avg)"
+        )
+
+    finally:
+        # ── Always cleanup staging tables ──
+        _cleanup_staging_tables(engine)
 
 
 def _render_window_sqls(
-    all_tables: set, table_name: str, start_date: str, end_date: str,
+    table_name: str, start_date: str, end_date: str,
     start_ym: str, end_ym: str, window_size: int,
 ):
-    """Pre-render both CREATE and INSERT SQL.
+    """Render CREATE TABLE and INSERT SQL for one window spec.
 
-    Uses pre-cached ``all_tables`` set instead of calling
-    ``inspect(engine)`` on every invocation.
+    No longer needs ``all_tables`` — bccp data is in staging table.
     """
     start = pd.to_datetime(start_date)
     end = pd.to_datetime(end_date)
@@ -148,9 +330,7 @@ def _render_window_sqls(
     select_parts = []
     insert_parts = []
 
-    # Single loop to build all components efficiently
     for idx, (month_key, rel_suffix) in enumerate(zip(month_keys, rel_suffixes)):
-        # CASE statements for pivoting (minimal, uses monthly_sums not monthly_metrics)
         case_parts.append(
             f"MAX(CASE WHEN month_key = '{month_key}' THEN item_sum END) AS \"item_{rel_suffix}\", "
             f"MAX(CASE WHEN month_key = '{month_key}' THEN revenue_sum END) AS \"revenue_{rel_suffix}\", "
@@ -161,7 +341,6 @@ def _render_window_sqls(
             f"MAX(CASE WHEN month_key = '{month_key}' THEN satisfaction_avg END) AS \"satisfaction_{rel_suffix}\""
         )
 
-        # DDL column definitions - with quotes for problematic column names
         cols_parts.append(
             f'    "item_{rel_suffix}" BIGINT,\n'
             f'    "revenue_{rel_suffix}" BIGINT,\n'
@@ -172,7 +351,6 @@ def _render_window_sqls(
             f'    "satisfaction_{rel_suffix}" DOUBLE PRECISION'
         )
 
-        # SELECT columns from pivoted table - with quotes
         select_parts.append(
             f'COALESCE(mp."item_{rel_suffix}", 0) AS "item_{rel_suffix}", '
             f'COALESCE(mp."revenue_{rel_suffix}", 0) AS "revenue_{rel_suffix}", '
@@ -183,21 +361,17 @@ def _render_window_sqls(
             f'COALESCE(mp."satisfaction_{rel_suffix}", 0) AS "satisfaction_{rel_suffix}"'
         )
 
-        # INSERT column names - with quotes
         insert_parts.append(
             f'"item_{rel_suffix}", "revenue_{rel_suffix}", "complaint_{rel_suffix}", '
             f'"delay_{rel_suffix}", "nodone_{rel_suffix}", "order_score_{rel_suffix}", '
             f'"satisfaction_{rel_suffix}"'
         )
 
-    # Join all parts efficiently
+    # Join all parts
     monthly_case_str = ",\n        ".join(case_parts)
     monthly_cols_str = ",\n".join(cols_parts)
     monthly_select_str = ", ".join(select_parts)
     monthly_insert_cols_str = ", ".join(insert_parts)
-
-    # Build bccp_src from cached table list (no inspect() call)
-    bccp_src = _build_bccp_src_from_cache(all_tables, start_date, end_date)
 
     # Render CREATE and INSERT SQL
     table_safe = table_name.replace(".", "_")
@@ -213,7 +387,6 @@ def _render_window_sqls(
         WINDOW_SIZE=window_size,
         START_YM=start_ym,
         END_YM=end_ym,
-        BCCP_SRC=bccp_src,
         MONTHLY_CASE_STATEMENTS=monthly_case_str,
         MONTHLY_SELECT_COLUMNS=monthly_select_str,
         MONTHLY_COLUMNS_LIST=monthly_insert_cols_str,
