@@ -59,3 +59,21 @@ Thumbs.db
 
 # ── Notebook checkpoints ──────────────
 .ipynb_checkpoints/
+
+# ── AI Agent local state ──────────────
+# Claude Code: keep .claude/commands/ (shared slash commands)
+# but exclude all local runtime state
+.claude/settings.local.json
+.claude/worktrees/
+.claude/memory/
+.claude/*.lock
+.claude/statsig/
+.claude/todos/
+.claude/projects/
+# Antigravity / other agents
+.antigravity/
+.cursor/
+.windsurf/
+.aider/
+.continue/
+.codeium/
