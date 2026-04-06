@@ -15,6 +15,7 @@ import os
 import sys
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pandas as pd
 from sqlalchemy.engine import Engine
@@ -119,6 +120,23 @@ def run_eda(
     if baseline_comparison:
         summary["baseline_comparison_count"] = len(baseline_comparison)
 
+    # Visualization
+    if config.visualize:
+        try:
+            from data.eda.visualize.charts import render_all_charts
+            from data.eda.visualize.html_report import build_html_report
+
+            logger.info("Generating visualization report...")
+            charts = render_all_charts(report)
+            ts_str = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+            report_filename = f"eda_report_{ts_str}.html"
+            report_path = config.report_dir / report_filename
+            build_html_report(charts, report.run_metadata, report_path)
+            summary["report_path"] = str(report_path)
+            logger.info("Visualization report: %s", report_path)
+        except Exception:
+            logger.exception("Failed to generate visualization — continuing")
+
     logger.info("EDA run %s — completed", run_id)
     return summary
 
@@ -210,6 +228,12 @@ def main() -> int:
         config = EdaConfig(
             is_baseline_run=is_baseline,
             temporal_window_months=temporal_months,
+            visualize=os.environ.get(
+                "EDA_VISUALIZE", "false",
+            ).lower() in ("true", "1", "yes"),
+            report_dir=Path(os.environ.get(
+                "EDA_REPORT_DIR", "reports/eda",
+            )),
         )
 
         # Temporal data loading (optional)

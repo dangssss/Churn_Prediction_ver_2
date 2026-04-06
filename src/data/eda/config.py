@@ -10,6 +10,7 @@ Conventions applied:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 from data.preprocessing.dataset_prep.pipeline_config import NUMERIC_FEATURES
@@ -51,6 +52,10 @@ class EdaConfig:
         Whether to save current run as baseline snapshot.
     schema : str
         PostgreSQL schema for EDA tables.
+    visualize : bool
+        Whether to generate HTML report with charts.
+    report_dir : Path
+        Output directory for HTML reports.
     """
 
     feature_cols: list[str] = field(default_factory=_default_features)
@@ -76,6 +81,10 @@ class EdaConfig:
 
     # Schema
     schema: str = "eda_reports"
+
+    # Visualization
+    visualize: bool = False
+    report_dir: Path = field(default_factory=lambda: Path("reports/eda"))
 
     # ── Validation ───────────────────────────────────────
     def validate(self) -> None:
@@ -134,4 +143,6 @@ class EdaConfig:
             "temporal_window_months": self.temporal_window_months,
             "is_baseline_run": self.is_baseline_run,
             "schema": self.schema,
+            "visualize": self.visualize,
+            "report_dir": str(self.report_dir),
         }

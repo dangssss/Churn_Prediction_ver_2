@@ -42,7 +42,7 @@ with DAG(
         namespace="default",
         image="churn_app:latest",
         image_pull_policy="IfNotPresent",
-        cmds=["python", "-m", "features.engineering.feature_gen.run_feature_generation", "--start", "2025-01-01"],
+        cmds=["python", "-m", "features.engineering.feature_gen.run_feature_generation", "--start", "2025-01-01", "--incremental"],
         env_vars={
             "WINDOW_SCHEMA": "data_window",
             "TZ": "Asia/Ho_Chi_Minh",

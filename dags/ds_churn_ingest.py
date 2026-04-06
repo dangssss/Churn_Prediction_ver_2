@@ -81,5 +81,17 @@ with DAG(
         reset_dag_run=True,
     )
 
-    # Flow: Ingest -> Validate -> Trigger
-    ingest_scan_and_load >> validate_data >> trigger_features
+    trigger_eda = TriggerDagRunOperator(
+        task_id="trigger_eda",
+        trigger_dag_id="ds_churn_eda",
+        conf={
+            "upstream_run_id": "{{ run_id }}",
+            "logical_date": "{{ ds }}",
+        },
+        wait_for_completion=False,
+        reset_dag_run=True,
+    )
+
+    # Flow: Ingest -> Validate -> Trigger Features + EDA in parallel
+    ingest_scan_and_load >> validate_data >> [trigger_features, trigger_eda]
+
