@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 def check_guardrail(
     metrics: dict,
     *,
-    min_f05: float = 0.10,
-    min_pr_auc: float = 0.05,
+    min_f05: float = 0.7,
+    min_pr_auc: float = 0.75,
 ) -> tuple[bool, str]:
     """Check if model metrics meet minimum quality thresholds.
 
