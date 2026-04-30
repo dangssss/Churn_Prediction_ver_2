@@ -1,9 +1,22 @@
 # ops/post_ingest_maintenance.py
+"""ANALYZE prod table + ghi đầy đủ ``ingest_log`` trong 1 INSERT.
+
+Convention:
+  - 10 §5.1 SRP — module này không chịu trách nhiệm DDL của ``ingest_log``
+    (đẩy về :mod:`ingest_log_repository`).
+  - 04 §5.4 Infrastructure (DB persistence).
+
+Pattern:
+  - Mỗi ZIP run = 1 INSERT mới (audit history tự nhiên qua row mới, không
+    UPDATE row cũ → tránh mất lịch sử).
+"""
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
+from data.ingestion.ops.copy_and_insert_to_production import IngestStats
+from data.ingestion.ops.ingest_log_repository import ensure_ingest_log_schema
 from data.ingestion.resources import PostgresConfig, get_pg_conn
 from shared.logging_config import get_logger
 
@@ -14,30 +27,33 @@ def post_ingest_maintenance(
     meta: dict[str, Any],
     pg_cfg: PostgresConfig,
     *,
+    stats: IngestStats,
+    md5_hash: str,
     prod_schema: str = "public",
     ingest_schema: str = "ingest",
-    stg_rows: int | None = None,
-    prod_rows: int | None = None,
     zip_path: Path | None = None,
 ) -> None:
-    """
-    Hậu xử lý sau khi nạp xong 1 ZIP:
-      - ANALYZE bảng prod theo tháng
-      - Ghi log vào ingest.ingest_log (tự tạo schema + table nếu chưa có)
+    """Hậu xử lý sau khi nạp 1 ZIP thành công.
 
-    Input:
-      - meta: dict từ unzip_and_discover (cần base, table_name, period_key_month)
-      - pg_cfg: PostgresConfig
-      - prod_schema: schema prod, vd 'public'
-      - ingest_schema: schema log, vd 'ingest'
-      - stg_rows: số dòng được log (same as prod_rows, legacy key for history)
-      - prod_rows: số dòng insert vào production
-      - zip_path: Path tới file ZIP (để log zip_name và file_size)
+    Steps:
+      1. Đảm bảo schema ``ingest_log`` (delegate sang repository module).
+      2. ANALYZE bảng prod (tối ưu query plan).
+      3. INSERT 1 row vào ``ingest_log`` chứa đầy đủ metrics + md5 + validation.
+
+    Args:
+        meta: dict từ ``unzip_and_discover`` (cần ``base``, ``table_name``,
+            ``period_key_month``).
+        pg_cfg: PostgresConfig cho DB connection.
+        stats: :class:`IngestStats` từ ``copy_and_insert_to_production``.
+        md5_hash: MD5 hex digest của ZIP đã ingest (đã tính ở job-level).
+        prod_schema: Schema chứa bảng prod (default ``public``).
+        ingest_schema: Schema chứa ``ingest_log`` (default ``ingest``).
+        zip_path: Path tới ZIP — dùng cho ``zip_name``, ``file_size``, ``file_mtime``.
     """
     base = meta.get("base", "")
     table_name = meta.get("table_name", "")
     period_key_month = meta.get("period_key_month")  # vd: "202403"
-    zip_name = zip_path.name if zip_path is not None else None
+    zip_name = zip_path.name if zip_path is not None else ""
     file_size = zip_path.stat().st_size if zip_path is not None else 0
     file_mtime = zip_path.stat().st_mtime if zip_path is not None else 0.0
 
@@ -48,71 +64,57 @@ def post_ingest_maintenance(
     try:
         logger.info(f'Running post_ingest_maintenance for {prod_schema}."{table_name}"')
 
-        # 1) Đảm bảo schema ingest tồn tại
-        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {ingest_schema};")
+        # 1) Schema ingest_log (single source of truth = ingest_log_repository).
+        ensure_ingest_log_schema(conn, ingest_schema=ingest_schema)
 
-        # 2) Tạo bảng ingest_log nếu chưa có
-        cur.execute(f"""
-        CREATE TABLE IF NOT EXISTS {ingest_schema}.ingest_log (
-          id                bigserial PRIMARY KEY,
-          zip_name          text        NOT NULL,
-          base              text        NOT NULL,
-          table_name        text        NOT NULL,
-          period_key_month  varchar(6),
-          prod_schema       text        NOT NULL,
-          staging_rows      bigint,
-          prod_rows         bigint,
-          file_size         bigint,
-          file_mtime        double precision,
-          status            text        NOT NULL,
-          started_at        timestamptz DEFAULT now(),
-          finished_at       timestamptz DEFAULT now()
-        );
-        """)
-
-        # 2.1) Thêm các cột mới nếu chưa có (safe migration)
-        for col_name, col_type in [("file_size", "bigint"), ("file_mtime", "double precision")]:
-            try:
-                cur.execute(f"ALTER TABLE {ingest_schema}.ingest_log ADD COLUMN IF NOT EXISTS {col_name} {col_type};")
-            except Exception:
-                # Column đã tồn tại hoặc lỗi khác - bỏ qua
-                pass
-        conn.commit()
-
-        # 3) ANALYZE bảng prod để tối ưu query plan
+        # 2) ANALYZE prod table.
         if table_name:
             cur.execute(f'ANALYZE {prod_schema}."{table_name}";')
             logger.info(f'Analyzed {prod_schema}."{table_name}"')
-        # 4) Ghi log success
+
+        # 3) INSERT log — đầy đủ metrics trong 1 statement.
         cur.execute(
             f"""
-            INSERT INTO {ingest_schema}.ingest_log(
-              zip_name, base, table_name, period_key_month,
-              prod_schema, staging_rows, prod_rows, file_size, file_mtime, status
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+            INSERT INTO {ingest_schema}.ingest_log (
+                zip_name, base, table_name, period_key_month,
+                prod_schema, staging_rows, prod_rows,
+                file_size, file_mtime, status,
+                md5_hash, rows_inserted, rows_in_csv, validation_passed
+            ) VALUES (
+                %s, %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s, %s
+            );
             """,
             (
-                zip_name or "",
+                zip_name,
                 base,
                 table_name,
                 period_key_month,
                 prod_schema,
-                stg_rows,
-                prod_rows,
+                stats.rows_inserted,           # staging_rows = prod_rows (no staging)
+                stats.rows_inserted,
                 file_size,
                 file_mtime,
                 "success",
+                md5_hash,
+                stats.rows_inserted,
+                stats.rows_in_csv,
+                stats.validation_passed,
             ),
         )
 
         conn.commit()
-        logger.info(f'Logged success for zip={zip_name}, table={prod_schema}."{table_name}", prod_rows={prod_rows}')
+        logger.info(
+            f"Logged success for zip={zip_name}, table={prod_schema}.\"{table_name}\", "
+            f"rows_inserted={stats.rows_inserted:,}, rows_in_csv={stats.rows_in_csv:,}, "
+            f"validation_passed={stats.validation_passed}"
+        )
 
     except Exception as e:
         conn.rollback()
         logger.error(f"post_ingest_maintenance for {table_name}: {e}")
-        # tuỳ ý: có thể raise để job fail cứng, hoặc chỉ in lỗi
-        # ở đây mình raise cho dễ debug:
         raise
     finally:
         try:
