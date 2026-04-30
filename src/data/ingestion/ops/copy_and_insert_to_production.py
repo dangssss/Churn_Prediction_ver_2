@@ -1,7 +1,27 @@
 # ops/copy_and_insert_to_production.py
+"""COPY CSV → production tables (atomic, with deadlock retry & validation).
+
+Convention references:
+  - 10 §3 Readability / §4.6 Named constants
+  - 10 §5.1 SRP — module chỉ đảm nhiệm load CSV vào prod table
+  - 04 §5.4 Infrastructure layer (DB persistence)
+
+Design notes:
+  - **Atomic**: toàn bộ DDL + TRUNCATE + COPY chạy trong 1 transaction.
+    Nếu bất kỳ bước nào fail → rollback → bảng prod giữ nguyên trạng thái cũ.
+  - **Truncate-and-reload** cho cả snapshot lẫn monthly (Kịch bản A):
+    ZIP monthly mới chứa toàn bộ CSV của tháng đó (full snapshot per-month).
+  - **Encryption mapping save** chạy TRƯỚC commit DB. Nếu save mapping fail →
+    rollback DB để tránh dữ liệu encrypted không có khoá giải.
+  - **Deadlock retry** ở tầng job (qua tenacity), không retry trong chính
+    hàm này vì retry trong scope của 1 connection sẽ không reset transaction.
+  - Hàm trả về :class:`IngestStats` để caller (post_ingest_maintenance) ghi
+    đầy đủ metrics vào ``ingest_log`` trong 1 INSERT.
+"""
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -27,13 +47,25 @@ from shared.logging_config import get_logger
 logger = get_logger(__name__)
 
 
-class CsvHeaderMismatchError(Exception):
-    """
-    Được raise khi header CSV (số lượng cột) không khớp với EXPECTED_HEADERS
-    cho base tương ứng. Dùng để dừng ingest và đẩy file vào fail_ingest.
-    """
+# ---- Constants ----------------------------------------------------------
 
-    pass
+# Ngưỡng mismatch giữa số dòng CSV input và số dòng insert vào prod.
+# Vượt ngưỡng này → validation_passed = False (vẫn commit, nhưng log warning).
+# 0.0 = strict (mọi mismatch đều fail validation).
+_VALIDATION_TOLERANCE_PCT = 0.0
+
+# Header preview length khi log mismatch (tránh dump full schema 50+ cột).
+_HEADER_PREVIEW_LEN = 10
+
+# Sample size dùng cho debug log khi COPY fail.
+_DEBUG_SAMPLE_LEN = 5
+
+
+class CsvHeaderMismatchError(Exception):
+    """Raise khi header CSV không khớp ``EXPECTED_HEADERS``.
+
+    Caller (ingest_zip_job) bắt exception này → move ZIP sang ``fail_data``.
+    """
 
 
 # ============================================================
@@ -43,7 +75,7 @@ class CsvHeaderMismatchError(Exception):
 
 COMPLAINT_CODES = [114, 115, 116, 134, 194, 554, 595, 314, 594, 274, 614, 654, 234, 174]
 
-EXPECTED_HEADERS = {
+EXPECTED_HEADERS: dict[str, list[str]] = {
     "bccp_orderitem": [
         "crm_code_enc",
         "cms_code_enc",
@@ -75,7 +107,7 @@ EXPECTED_HEADERS = {
         *[f"complaint{c}" for c in COMPLAINT_CODES],
         "order_score",
         "bccp_update_date",
-    ],  # CSV có item_code_enc, transform map sang item_code
+    ],
     "cas_customer": [
         "cms_code_enc",
         "report_month",
@@ -106,7 +138,7 @@ EXPECTED_HEADERS = {
         "total_complaint",
         *[f"complaint{c}" for c in COMPLAINT_CODES],
         "updated_at",
-    ],  # 37 columns (CSV thật không có etl_date)
+    ],
     "cms_complaint": [
         "cms_code_enc",
         "item_code",
@@ -119,7 +151,7 @@ EXPECTED_HEADERS = {
         "complaint_content_bit",
         "complaint_update_date",
         "etl_date",
-    ],  # CSV có cms_code, map theo position sang cms_code_enc (canonical)
+    ],
     "cas_info": [
         "cms_code_enc",
         "crm_code_enc",
@@ -144,11 +176,29 @@ TRANSFORM_DISPATCH = {
 }
 
 
+# ---- Public dataclass ---------------------------------------------------
+
+@dataclass(frozen=True)
+class IngestStats:
+    """Kết quả của 1 lần copy_and_insert_to_production.
+
+    Attributes:
+        rows_inserted: Số dòng được COPY vào prod table.
+        rows_in_csv:   Tổng số dòng đọc từ CSV (trước khi transform/skip).
+        validation_passed: ``True`` nếu chênh lệch ≤ ``_VALIDATION_TOLERANCE_PCT``.
+        diff_pct: ``|rows_in_csv - rows_inserted| / max(rows_in_csv, 1)``.
+    """
+
+    rows_inserted: int
+    rows_in_csv: int
+    validation_passed: bool
+    diff_pct: float
+
+
+# ---- Public API ---------------------------------------------------------
+
 def get_csv_header(csv_file: Path) -> list[str]:
-    """
-    Đọc dòng đầu của CSV file để lấy header.
-    Delimiter: ';', Encoding: utf-8-sig
-    """
+    """Đọc dòng đầu CSV (delimiter=';', encoding='utf-8-sig')."""
     with open(csv_file, encoding="utf-8-sig", newline="") as f:
         reader = csv.reader(f, delimiter=";")
         first_row = next(reader, None)
@@ -166,15 +216,21 @@ def copy_and_insert_to_production(
     injection_mode: str = CSV_INJECTION_GUARD,
     use_encryption: bool = True,
     encryption_mapping_file: str | None = None,
-) -> int:
-    """
-    Read CSV files and insert directly into production table with data transformation.
+) -> IngestStats:
+    """Đọc CSV và COPY thẳng vào production (atomic, truncate-and-reload).
 
-    Supports 4 tables:
-    - bccp_orderitem (monthly mode)
-    - cms_complaint (monthly mode)
-    - cas_customer (snapshot mode)
-    - cas_info (snapshot mode)
+    Hỗ trợ 4 base: ``bccp_orderitem``, ``cms_complaint``, ``cas_customer``,
+    ``cas_info`` ở cả 2 mode (snapshot / monthly). Theo Kịch bản A, ZIP
+    monthly chứa toàn bộ CSV của tháng đó → cần TRUNCATE bảng per-month
+    trước khi COPY để tránh duplicate.
+
+    Returns:
+        :class:`IngestStats` (caller dùng để ghi ``ingest_log``).
+
+    Raises:
+        CsvHeaderMismatchError: Header CSV không khớp ``EXPECTED_HEADERS``.
+        Exception: Bất kỳ lỗi DB nào → caller (job) chịu trách nhiệm
+            move ZIP sang ``fail_data``.
     """
     base = meta["base"]
     table_name = meta["table_name"]  # vd: bccp_orderitem_2501, cas_customer
@@ -184,7 +240,7 @@ def copy_and_insert_to_production(
 
     if not csv_files:
         logger.warning(f"No CSV files to ingest for {table_name}")
-        return 0
+        return IngestStats(rows_inserted=0, rows_in_csv=0, validation_passed=True, diff_pct=0.0)
 
     # Get table config (text_cols, datetime_cols, mode)
     try:
@@ -193,13 +249,15 @@ def copy_and_insert_to_production(
         logger.error(f"{e}")
         raise
 
-    text_cols = table_cfg.get("text_cols", set())
-    datetime_cols = table_cfg.get("datetime_cols", set())
+    # Lưu ý: text_cols / datetime_cols không dùng trực tiếp trong COPY pipeline
+    # hiện tại (transform_*_row đã ép kiểu). Giữ lại để future-proof.
+    _ = table_cfg.get("text_cols", set())
+    _ = table_cfg.get("datetime_cols", set())
 
     prod_tbl = f'{prod_schema}."{table_name}"'
 
     # Setup encryption nếu cần
-    encrypto = None
+    encrypto: CustomerEncryption | None = None
     if use_encryption:
         encrypto = CustomerEncryption()
         if encryption_mapping_file and Path(encryption_mapping_file).exists():
@@ -209,161 +267,82 @@ def copy_and_insert_to_production(
             except Exception as e:
                 logger.warning(f"Could not load encryption mapping: {e}")
 
-    logger.info(f"COPY & CAST -> production: {prod_tbl} | base={base} | mode={mode} | files={len(csv_files)}")
+    logger.info(
+        f"COPY & CAST -> production: {prod_tbl} | base={base} | mode={mode} | files={len(csv_files)}"
+    )
 
-    # ===== Lấy header từ CSV file đầu tiên =====
-    first_csv = csv_files[0]
-    try:
-        headers_raw = get_csv_header(first_csv)
-        headers_raw = [h.strip() for h in headers_raw]
-        logger.info(f"Read header from {first_csv.name}: {len(headers_raw)} columns (raw: {headers_raw[:5]}...)")
-    except Exception as e:
-        logger.error(f"Failed to read header from {first_csv.name}: {e}")
-        raise
+    headers, header_map, headers_raw = _resolve_headers(csv_files[0], base)
 
-    # ===== Map CSV header → canonical header (STRICT, position-based) =====
-    expected = EXPECTED_HEADERS.get(base)
-    header_map: dict[str, str] = {}
-
-    if expected is not None:
-        # Bắt buộc số cột khớp với schema
-        if len(expected) != len(headers_raw):
-            msg = (
-                f"Header count mismatch for base={base}: "
-                f"expected {len(expected)} columns, got {len(headers_raw)}. "
-                f"CSV đang bị thiếu hoặc thừa cột so với schema EXPECTED_HEADERS.\n"
-                f"Expected: {expected[:10]}{'...' if len(expected) > 10 else ''}\n"
-                f"Got:      {headers_raw[:10]}{'...' if len(headers_raw) > 10 else ''}"
-            )
-            logger.error(msg)
-            # Raise để ingest_zip_job bắt được và move ZIP sang fail_ingest
-            raise CsvHeaderMismatchError(msg)
-
-        # Số cột khớp → map theo vị trí: cột i file → cột i canonical
-        header_map = {headers_raw[i]: expected[i] for i in range(len(expected))}
-        headers = expected[:]  # canonical order
-
-        mismatches = [(headers_raw[i], expected[i]) for i in range(len(expected)) if headers_raw[i] != expected[i]]
-        if mismatches:
-            logger.warning(
-                "Column name mismatches detected (will map by position for base=%s):",
-                base,
-            )
-            for csv_col, canonical_col in mismatches:
-                logger.warning("  CSV: '%s' → Canonical: '%s'", csv_col, canonical_col)
-
-        logger.info(
-            "Using canonical header order for base=%s (%d columns)",
-            base,
-            len(headers),
-        )
-    else:
-        # Base chưa có EXPECTED_HEADERS → cho phép dùng header raw
-        header_map = {h: h for h in headers_raw}
-        headers = headers_raw
-        logger.info(
-            "Using raw header from CSV (no EXPECTED_HEADERS for base=%s): %d columns",
-            base,
-            len(headers),
-        )
-
-    # ===== Kết nối DB =====
+    # ===== Atomic transaction: DDL + TRUNCATE + COPY =====
     conn = get_pg_conn(pg_cfg)
     conn.autocommit = False
     cur = conn.cursor()
 
-    try:
-        # 0) Đảm bảo schema production tồn tại
-        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {prod_schema};")
-        conn.commit()
-        logger.info(f"Ensured production schema: {prod_schema}")
+    rows_inserted = 0
+    rows_in_csv = 0
 
-        # 1) Tạo bảng production với ĐÚNG kiểu dữ liệu (INT, TIMESTAMPTZ, etc.)
+    try:
+        # 0) Schema prod
+        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {prod_schema};")
+
+        # 1) DDL với đúng kiểu dữ liệu
         ddl = get_prod_table_ddl(base, table_name, prod_schema)
         cur.execute(ddl)
-        conn.commit()
-        logger.info(f"Ensured production table: {prod_tbl}")
 
-        # 2) TRUNCATE production nếu mode = snapshot
-        if mode == "snapshot":
-            cur.execute(f"TRUNCATE TABLE {prod_tbl};")
-            conn.commit()
-            logger.info(f"Truncated {prod_tbl} (snapshot mode)")
+        # 2) TRUNCATE cho cả snapshot lẫn monthly (Kịch bản A: full snapshot
+        #    per-month — ZIP mới luôn chứa toàn bộ CSV của tháng đó).
+        cur.execute(f"TRUNCATE TABLE {prod_tbl};")
+        logger.info(f"Truncated {prod_tbl} (mode={mode}, full reload)")
 
-        # 3) Đọc CSV và transform data
-        total_rows = 0
+        # 3) COPY từng CSV
         for csv_file in csv_files:
-            logger.info(f"Reading {csv_file.name}")
+            file_inserted, file_seen = _copy_one_csv(
+                cur=cur,
+                csv_file=csv_file,
+                prod_tbl=prod_tbl,
+                base=base,
+                headers_raw=headers_raw,
+                header_map=header_map,
+                encrypto=encrypto,
+                batch_rows=batch_rows,
+            )
+            rows_inserted += file_inserted
+            rows_in_csv += file_seen
+            logger.info(
+                f"[{base}] {csv_file.name}: read={file_seen:,}, inserted={file_inserted:,} "
+                f"(running total={rows_inserted:,})"
+            )
 
-            with open(csv_file, encoding="utf-8-sig", newline="") as f:
-                # CSV files sử dụng delimiter ';'
-                delimiter = ";"
-                reader = csv.DictReader(f, delimiter=delimiter)
-                source_fields = [h.strip() for h in (reader.fieldnames or [])]
-                if len(source_fields) != len(headers_raw):
-                    msg = (
-                        f"Header mismatch in {csv_file.name}: "
-                        f"expected {len(headers_raw)} columns (from first CSV), "
-                        f"got {len(source_fields)} columns. "
-                        f"All CSVs in ZIP must have same header structure."
-                    )
-                    logger.error(msg)
-                    raise CsvHeaderMismatchError(msg)
+        # 4) Tính validation TRƯỚC commit (quyết định có rollback không)
+        diff = abs(rows_in_csv - rows_inserted)
+        diff_pct = diff / max(rows_in_csv, 1)
+        validation_passed = diff_pct <= _VALIDATION_TOLERANCE_PCT
+        if not validation_passed:
+            logger.warning(
+                f"[{base}] Row count mismatch: csv={rows_in_csv:,} "
+                f"inserted={rows_inserted:,} diff_pct={diff_pct:.4%} "
+                f"(tolerance={_VALIDATION_TOLERANCE_PCT:.4%})"
+            )
 
-                logger.debug(f"Processing: {len(source_fields)} columns from {csv_file.name}")
-
-                # Buffer rows để batch insert
-                rows_buffer: list[dict[str, Any]] = []
-                for raw_row in reader:
-                    # ===== NORMALIZE ROW: Apply header_map (position-based) =====
-                    # Chuẩn hoá key: strip khoảng trắng 2 đầu
-                    raw_row = {(k.strip() if isinstance(k, str) else k): v for k, v in raw_row.items()}
-
-                    # Áp map header: CSV key → canonical key (nếu khác tên)
-                    normalized_row: dict[str, Any] = {}
-                    for k, v in raw_row.items():
-                        canonical_key = header_map.get(k, k)
-                        normalized_row[canonical_key] = v
-
-                    raw_row = normalized_row
-                    # ===== HẾT NORMALIZE =====
-
-                    # Transform row theo table type (sử dụng dispatch dict)
-                    transform_func = TRANSFORM_DISPATCH.get(base)
-                    if transform_func is None:
-                        logger.warning(f"No transform function for base={base}, skipping row")
-                        continue
-
-                    transformed = transform_func(raw_row, encrypto)
-                    if transformed is None:
-                        continue  # Skip invalid row
-
-                    rows_buffer.append(transformed)
-
-                    # Batch insert
-                    if len(rows_buffer) >= batch_rows:
-                        _bulk_insert_rows(cur, prod_tbl, rows_buffer, base)
-                        conn.commit()
-                        total_rows += len(rows_buffer)
-                        logger.info(f"[{base}] Inserted {total_rows:,} rows so far...")
-                        rows_buffer = []
-
-                # Insert remaining rows
-                if rows_buffer:
-                    _bulk_insert_rows(cur, prod_tbl, rows_buffer, base)
-                    conn.commit()
-                    total_rows += len(rows_buffer)
-
-        # Save encryption mapping nếu sử dụng
+        # 5) Save encryption mapping TRƯỚC commit DB (Bug 5 fix).
+        #    Nếu save fail → raise → rollback toàn bộ transaction.
         if use_encryption and encrypto and encryption_mapping_file:
-            try:
-                encrypto.save_mapping(encryption_mapping_file)
-                logger.info(f"Saved encryption mapping to {encryption_mapping_file}")
-            except Exception as e:
-                logger.warning(f"Could not save encryption mapping: {e}")
+            encrypto.save_mapping(encryption_mapping_file)
+            logger.info(f"Saved encryption mapping to {encryption_mapping_file}")
 
-        logger.info(f"Production {prod_tbl}: {total_rows:,} rows inserted")
-        return total_rows
+        # 6) Commit toàn bộ (atomic).
+        conn.commit()
+        logger.info(
+            f"Production {prod_tbl}: {rows_inserted:,} rows committed "
+            f"(validation={'OK' if validation_passed else 'WARN'})"
+        )
+
+        return IngestStats(
+            rows_inserted=rows_inserted,
+            rows_in_csv=rows_in_csv,
+            validation_passed=validation_passed,
+            diff_pct=diff_pct,
+        )
 
     except Exception as e:
         conn.rollback()
@@ -380,11 +359,140 @@ def copy_and_insert_to_production(
             pass
 
 
+# ---- Internal helpers ---------------------------------------------------
+
+def _resolve_headers(
+    first_csv: Path, base: str
+) -> tuple[list[str], dict[str, str], list[str]]:
+    """Đọc header CSV đầu tiên và map sang canonical header.
+
+    Returns:
+        ``(canonical_headers, header_map, headers_raw)``.
+
+    Raises:
+        CsvHeaderMismatchError: Số cột không khớp ``EXPECTED_HEADERS[base]``.
+    """
+    try:
+        headers_raw = [h.strip() for h in get_csv_header(first_csv)]
+        logger.info(
+            f"Read header from {first_csv.name}: {len(headers_raw)} columns "
+            f"(raw: {headers_raw[:_DEBUG_SAMPLE_LEN]}...)"
+        )
+    except Exception as e:
+        logger.error(f"Failed to read header from {first_csv.name}: {e}")
+        raise
+
+    expected = EXPECTED_HEADERS.get(base)
+    if expected is None:
+        # Base chưa có EXPECTED_HEADERS → cho phép dùng header raw
+        logger.info(
+            "Using raw header from CSV (no EXPECTED_HEADERS for base=%s): %d columns",
+            base,
+            len(headers_raw),
+        )
+        return headers_raw[:], {h: h for h in headers_raw}, headers_raw
+
+    if len(expected) != len(headers_raw):
+        msg = (
+            f"Header count mismatch for base={base}: "
+            f"expected {len(expected)} columns, got {len(headers_raw)}. "
+            f"CSV đang bị thiếu hoặc thừa cột so với schema EXPECTED_HEADERS.\n"
+            f"Expected: {expected[:_HEADER_PREVIEW_LEN]}"
+            f"{'...' if len(expected) > _HEADER_PREVIEW_LEN else ''}\n"
+            f"Got:      {headers_raw[:_HEADER_PREVIEW_LEN]}"
+            f"{'...' if len(headers_raw) > _HEADER_PREVIEW_LEN else ''}"
+        )
+        logger.error(msg)
+        raise CsvHeaderMismatchError(msg)
+
+    # Map theo vị trí: cột i CSV → cột i canonical
+    header_map = {headers_raw[i]: expected[i] for i in range(len(expected))}
+    mismatches = [
+        (headers_raw[i], expected[i])
+        for i in range(len(expected))
+        if headers_raw[i] != expected[i]
+    ]
+    if mismatches:
+        logger.warning(
+            "Column name mismatches detected (will map by position for base=%s):", base
+        )
+        for csv_col, canonical_col in mismatches:
+            logger.warning("  CSV: '%s' → Canonical: '%s'", csv_col, canonical_col)
+
+    logger.info("Using canonical header order for base=%s (%d columns)", base, len(expected))
+    return expected[:], header_map, headers_raw
+
+
+def _copy_one_csv(
+    *,
+    cur,
+    csv_file: Path,
+    prod_tbl: str,
+    base: str,
+    headers_raw: list[str],
+    header_map: dict[str, str],
+    encrypto: CustomerEncryption | None,
+    batch_rows: int,
+) -> tuple[int, int]:
+    """Đọc 1 CSV, transform từng row, COPY theo batch.
+
+    Trong transaction caller — KHÔNG commit, KHÔNG rollback ở đây.
+
+    Returns:
+        ``(rows_inserted, rows_seen_in_csv)``.
+    """
+    transform_func = TRANSFORM_DISPATCH.get(base)
+    if transform_func is None:
+        logger.warning(f"No transform function for base={base}, skipping {csv_file.name}")
+        return 0, 0
+
+    rows_inserted = 0
+    rows_seen = 0
+
+    with open(csv_file, encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f, delimiter=";")
+        source_fields = [h.strip() for h in (reader.fieldnames or [])]
+        if len(source_fields) != len(headers_raw):
+            msg = (
+                f"Header mismatch in {csv_file.name}: "
+                f"expected {len(headers_raw)} columns (from first CSV), "
+                f"got {len(source_fields)} columns. "
+                f"All CSVs in ZIP must have same header structure."
+            )
+            logger.error(msg)
+            raise CsvHeaderMismatchError(msg)
+
+        logger.debug(f"Processing: {len(source_fields)} columns from {csv_file.name}")
+
+        rows_buffer: list[dict[str, Any]] = []
+        for raw_row in reader:
+            rows_seen += 1
+
+            # Strip + apply header_map (CSV key → canonical key)
+            raw_row = {(k.strip() if isinstance(k, str) else k): v for k, v in raw_row.items()}
+            normalized_row = {header_map.get(k, k): v for k, v in raw_row.items()}
+
+            transformed = transform_func(normalized_row, encrypto)
+            if transformed is None:
+                continue  # Skip invalid row
+
+            rows_buffer.append(transformed)
+
+            if len(rows_buffer) >= batch_rows:
+                _bulk_insert_rows(cur, prod_tbl, rows_buffer, base)
+                rows_inserted += len(rows_buffer)
+                rows_buffer = []
+
+        # Flush phần còn lại
+        if rows_buffer:
+            _bulk_insert_rows(cur, prod_tbl, rows_buffer, base)
+            rows_inserted += len(rows_buffer)
+
+    return rows_inserted, rows_seen
+
+
 def _bulk_insert_rows(cur, prod_tbl: str, rows: list[dict[str, Any]], base: str) -> None:
-    """
-    Insert rows vào production table bằng COPY FROM với StringIO.
-    Nhanh hơn executemany() rất nhiều lần.
-    """
+    """COPY FROM STDIN với StringIO buffer (nhanh hơn executemany)."""
     if not rows:
         return
 
@@ -395,33 +503,35 @@ def _bulk_insert_rows(cur, prod_tbl: str, rows: list[dict[str, Any]], base: str)
             for field in ts_fields:
                 val = row.get(field)
                 if isinstance(val, str) and val.strip():
-                    # Ép lại qua SafeTypeCaster.to_timestamp 1 lần nữa
-                    fixed = SafeTypeCaster.to_timestamp(val)
-                    row[field] = fixed  # có thể ra 'YYYY-MM-DD ...' hoặc None
+                    row[field] = SafeTypeCaster.to_timestamp(val)
 
-    # Lấy danh sách cột từ row đầu
     columns = list(rows[0].keys())
     col_str = ", ".join([f'"{col}"' for col in columns])
 
-    # Tạo CSV data trong memory
     buffer = StringIO()
-
     for row in rows:
         line_values = []
         for col in columns:
             val = row.get(col)
             if val is None:
-                line_values.append("\\N")  # PostgreSQL NULL marker
+                line_values.append("\\N")
             else:
-                # Escape special characters for COPY
-                val_str = str(val).replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
+                val_str = (
+                    str(val)
+                    .replace("\\", "\\\\")
+                    .replace("\t", "\\t")
+                    .replace("\n", "\\n")
+                    .replace("\r", "\\r")
+                )
                 line_values.append(val_str)
         buffer.write("\t".join(line_values) + "\n")
-
     buffer.seek(0)
 
     try:
-        cur.copy_expert(f"COPY {prod_tbl} ({col_str}) FROM STDIN WITH (FORMAT TEXT, NULL '\\N')", buffer)
+        cur.copy_expert(
+            f"COPY {prod_tbl} ({col_str}) FROM STDIN WITH (FORMAT TEXT, NULL '\\N')",
+            buffer,
+        )
     except Exception as e:
         logger.error(f"COPY FROM failed for base={base}: {e}")
         logger.debug(f"Columns: {columns}")
