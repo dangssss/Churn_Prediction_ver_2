@@ -34,7 +34,7 @@ with DAG(
         namespace="default", # Or the namespace configured for your local K8s
         image="churn_app:latest",
         image_pull_policy="IfNotPresent",
-        container_security_context=k8s.V1SecurityContext(run_as_user=0),
+        container_security_context=k8s.V1SecurityContext(run_as_user=1000),
         cmds=["python", "-m", "pipelines.monthly.monthly_v2_cli"],
         env_vars={
             "TZ": "Asia/Ho_Chi_Minh",
