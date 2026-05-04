@@ -106,7 +106,7 @@ with DAG(
     volume = k8s.V1Volume(
         name="churn-data-mount",
         # prod: path="/data/churn_prediction/ftp_churn"
-        host_path=k8s.V1HostPathVolumeSource(path="/run/desktop/mnt/host/d/Churn_Prediction_Product/data")
+        host_path=k8s.V1HostPathVolumeSource(path="/run/desktop/mnt/host/d/Churn_Prediction_v2/data")
     )
     volume_mount = k8s.V1VolumeMount(
         name="churn-data-mount",
@@ -121,6 +121,7 @@ with DAG(
         namespace="default",
         image="churn_app:latest",
         image_pull_policy="IfNotPresent",
+        container_security_context=k8s.V1SecurityContext(run_as_user=0),
         cmds=["/bin/bash", "-c", HOUSEKEEPING_SCRIPT],
         env_vars={"CHURN_MODEL_DIR": "/churn_data/models"},
         env_from=[
