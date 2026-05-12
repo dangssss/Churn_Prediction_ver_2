@@ -40,7 +40,7 @@ with DAG(
         task_id="run_features_k8s",
         name="churn-features-pod",
         namespace="default",
-        image="churn_app:latest",
+        image="churn_app:v2",
         image_pull_policy="IfNotPresent",
         container_security_context=k8s.V1SecurityContext(run_as_user=0),
         cmds=["python", "-m", "features.engineering.feature_gen.run_feature_generation", "--start", "2025-01-01", "--incremental"],

@@ -48,7 +48,7 @@ with DAG(
         task_id="run_eda_k8s",
         name="churn-eda-pod",
         namespace="default",
-        image="churn_app:latest",
+        image="churn_app:v2",
         image_pull_policy="IfNotPresent",
         container_security_context=k8s.V1SecurityContext(run_as_user=0),
         cmds=["python", "-m", "data.eda.run_eda"],

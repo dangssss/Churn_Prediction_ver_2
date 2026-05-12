@@ -32,7 +32,7 @@ with DAG(
         task_id="run_monthly_v2_k8s_pod",
         name="churn-pipeline-v2-pod",
         namespace="default", # Or the namespace configured for your local K8s
-        image="churn_app:latest",
+        image="churn_app:v2",
         image_pull_policy="IfNotPresent",
         container_security_context=k8s.V1SecurityContext(run_as_user=0),
         cmds=["python", "-m", "pipelines.monthly.monthly_v2_cli"],
