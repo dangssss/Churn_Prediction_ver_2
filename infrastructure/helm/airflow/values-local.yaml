@@ -38,3 +38,4 @@ logs:
   persistence:
     enabled: true
     size: 1Gi
+    existingClaim: "local-logs-pvc"
