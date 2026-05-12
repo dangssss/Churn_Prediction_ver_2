@@ -34,13 +34,11 @@ with DAG(
         namespace="default", # Or the namespace configured for your local K8s
         image="churn_app:latest",
         image_pull_policy="IfNotPresent",
-        container_security_context=k8s.V1SecurityContext(run_as_user=1000),
+        container_security_context=k8s.V1SecurityContext(run_as_user=0),
         cmds=["python", "-m", "pipelines.monthly.monthly_v2_cli"],
         env_vars={
             "TZ": "Asia/Ho_Chi_Minh",
             "PYTHONUNBUFFERED": "1",
-            "CSKH_FILE_PATH": "/churn_data/cskh/confirmed_churners.csv",
-            "CHURN_MODEL_DIR": "/churn_data/models",
         },
         env_from=[
             k8s.V1EnvFromSource(secret_ref=k8s.V1SecretEnvSource(name="churn-db-secret"))
