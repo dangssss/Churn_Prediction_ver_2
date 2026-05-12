@@ -84,7 +84,7 @@ x-airflow-common:
     - ../dags:/opt/airflow/dags
     - ../src:/churn_source/src
     - ../.env:/churn_source/.env:ro
-    - ${DATA_DIR:-/data/churn_prediction/ftp_churn}:/churn_data
+    - ../data:/churn_data
 
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
