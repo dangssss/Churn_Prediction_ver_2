@@ -33,9 +33,9 @@ class FSConfig:
         - Tạo FSConfig
         - Gọi ensure_dirs()
         """
-        inc = Path(os.getenv("CSKH_FILE_PATH", "data/ftp_churn"))
+        inc = Path(os.getenv("INCOMING_DIR", "data/incoming"))
         sav = Path(os.getenv("SAVED_DIR", "data/saved"))
-        fail = Path(os.getenv("FAIL_DIR", "data/fail"))
+        fail = Path(os.getenv("FAIL_DIR", "data/failed"))
         cfg = cls(incoming_dir=inc, saved_dir=sav, fail_dir=fail)
         cfg.ensure_dirs()
         return cfg
