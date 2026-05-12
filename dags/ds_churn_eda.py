@@ -50,7 +50,7 @@ with DAG(
         namespace="default",
         image="churn_app:latest",
         image_pull_policy="IfNotPresent",
-        container_security_context=k8s.V1SecurityContext(run_as_user=1000),
+        container_security_context=k8s.V1SecurityContext(run_as_user=0),
         cmds=["python", "-m", "data.eda.run_eda"],
         env_vars={
             "TZ": "Asia/Ho_Chi_Minh",
