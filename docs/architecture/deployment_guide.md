@@ -70,6 +70,19 @@ helm repo update
   -f infrastructure/helm/airflow/values-local.yaml
 ```
 
+> [!TIP]
+> **Cài đặt Offline (Xử lý lỗi mạng/VPN chặn kết nối tới Apache)**
+> Nếu chạy lệnh trên bị lỗi dạng `dial tcp... Timeout`, nguyên nhân là do mạng công ty/Firewall chặn dòng lệnh tải file ngầm. Cách xử lý:
+> 1. Truy cập trình duyệt web tải file thủ công: `https://downloads.apache.org/airflow/helm-chart/1.21.0/airflow-1.21.0.tgz`
+> 2. Đặt file `airflow-1.21.0.tgz` vào thư mục gốc dự án.
+> 3. Chạy lệnh cài đặt trực tiếp bằng file (thay thế cho Bước 3 ở trên):
+>    ```bash
+>    .\helm upgrade --install airflow .\airflow-1.21.0.tgz \
+>      --namespace default \
+>      -f infrastructure/helm/airflow/values.yaml \
+>      -f infrastructure/helm/airflow/values-local.yaml
+>    ```
+
 **Bước 4: Truy cập và Theo dõi**
 ```bash
 # Ánh xạ cổng để truy cập UI ở http://localhost:8080 (Tài khoản: admin / admin)

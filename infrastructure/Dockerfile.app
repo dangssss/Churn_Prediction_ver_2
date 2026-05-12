@@ -25,7 +25,7 @@ FROM python:3.11-slim-bookworm AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/home/appuser/.local/bin:$PATH" \
-    PYTHONPATH="/app/src"
+    PYTHONPATH="/home/appuser/.local/lib/python3.11/site-packages:/app/src"
 
 # Install runtime system dependencies (required for psycopg2-binary)
 RUN apt-get update && apt-get install -y --no-install-recommends \
