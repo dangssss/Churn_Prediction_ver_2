@@ -49,7 +49,7 @@ with DAG(
         task_id="ingest_scan_and_load_k8s",
         name="churn-ingestion-pod",
         namespace="default",
-        image="churn_app:latest",
+        image="churn_app:v2",
         image_pull_policy="IfNotPresent",
         container_security_context=k8s.V1SecurityContext(run_as_user=0),
         cmds=["python", "-m", "data.ingestion.cli"],
