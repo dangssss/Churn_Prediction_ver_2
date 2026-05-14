@@ -34,7 +34,7 @@ with DAG(
     volume = k8s.V1Volume(
         name="churn-data-mount",
         host_path=k8s.V1HostPathVolumeSource(
-            path="/run/desktop/mnt/host/d/Churn_Prediction_v2/data"
+            path="/churn_data"
         ),
     )
     volume_mount = k8s.V1VolumeMount(

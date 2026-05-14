@@ -27,7 +27,7 @@ with DAG(
     volume = k8s.V1Volume(
         name="churn-data-mount",
         # prod: path="/data/churn_prediction/ftp_churn"
-        host_path=k8s.V1HostPathVolumeSource(path="/run/desktop/mnt/host/d/Churn_Prediction_v2/data")
+        host_path=k8s.V1HostPathVolumeSource(path="/churn_data")
     )
     volume_mount = k8s.V1VolumeMount(
         name="churn-data-mount",

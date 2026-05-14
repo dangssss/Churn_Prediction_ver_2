@@ -30,19 +30,19 @@ with DAG(
     tags=["ds_churn", "ingest"],
 ) as dag:
 
-    # Common volume — host path mounted into container at /churn_data.
-    volume = k8s.V1Volume(
-        name="churn-data-mount",
-        # prod: path="/data/churn_prediction/ftp_churn"
+    # Host mount volume - from Docker host (Airflow container)
+    host_volume = k8s.V1Volume(
+        name="host-mount",
         host_path=k8s.V1HostPathVolumeSource(
-            path="/run/desktop/mnt/host/d/Churn_Prediction_v2/data"
+            path="/churn_data",  # Path inside the kind node container
+            type="Directory",
         ),
     )
-    volume_mount = k8s.V1VolumeMount(
-        name="churn-data-mount",
+    
+    host_mount = k8s.V1VolumeMount(
+        name="host-mount",
         mount_path="/churn_data",
-        sub_path=None,
-        read_only=False,
+        read_only=False
     )
 
     ingest_scan_and_load = KubernetesPodOperator(
@@ -63,8 +63,8 @@ with DAG(
         env_from=[
             k8s.V1EnvFromSource(secret_ref=k8s.V1SecretEnvSource(name="churn-db-secret"))
         ],
-        volumes=[volume],
-        volume_mounts=[volume_mount],
+        volumes=[host_volume],
+        volume_mounts=[host_mount],
         is_delete_operator_pod=True,
         get_logs=True,
         do_xcom_push=True,
