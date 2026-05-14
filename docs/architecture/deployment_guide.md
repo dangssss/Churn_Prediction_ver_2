@@ -33,20 +33,34 @@ docker-compose up -d --build
 > - Truy cập Web UI: `http://localhost:8080` (`airflow`/`airflow`).
 > - Tắt: `docker-compose down --volumes --remove-orphans`.
 
-### 2.2. Cách 2: Sử dụng K8s Local (Docker Desktop) - KHUYÊN DÙNG
-Đây là cách test chuẩn xác nhất vì nó mô phỏng 1:1 luồng `KubernetesPodOperator` trên Production (1 Task - 1 Container).
+### 2.2. Cách 2: Sử dụng K8s Local (Kind Cluster Độc Lập) - KHUYÊN DÙNG
+Đây là cách test chuẩn xác nhất vì nó mô phỏng 1:1 luồng `KubernetesPodOperator` trên Production (1 Task - 1 Container) và giải quyết được vấn đề mount ổ đĩa trên Windows.
 
-**Bước 1: Build Docker Images chuẩn Production**
+> [!WARNING]
+> **TẮT KUBERNETES CỦA DOCKER DESKTOP:** 
+> Docker Desktop bản mới tự động dùng ngầm một cụm `kind` bị khoá tính năng mount ổ đĩa (hostPath).
+> Bạn **BẮT BUỢC** phải vào cài đặt Docker Desktop -> chọn mục Kubernetes -> **bỏ tick "Enable Kubernetes"** -> Apply & Restart để tránh xung đột.
+
+**Bước 1: Cài đặt công cụ `kind` và tạo cụm**
+Bạn cần tải `kind.exe` (từ Github https://kind.sigs.k8s.io/docs/user/quick-start/#installation) và đưa vào PATH, hoặc sử dụng script `rebuild_k8s_local.ps1` có sẵn trong dự án để tự động tải và tạo cụm.
+Nếu làm thủ công, chạy lệnh sau tại thư mục gốc dự án:
+```bash
+kind create cluster --config infrastructure/kind/kind-config.yaml
+```
+
+**Bước 2: Build Docker Images chuẩn Production**
 Tại thư mục gốc dự án:
 ```bash
 # 1. Build image ứng dụng cốt lõi (chứa code Machine Learning model, pipeline)
-docker build -t churn_app:latest -f infrastructure/Dockerfile.app .
+docker build -t churn_app:v2 -f infrastructure/Dockerfile.app .
+kind load docker-image churn_app:v2 --name churn-local-k8s
 
 # 2. Build image tuỳ chỉnh của Airflow (cài sẵn provider K8s)
 docker build -t churn_app_airflow:latest -f infrastructure/Dockerfile.airflow .
+kind load docker-image churn_app_airflow:latest --name churn-local-k8s
 ```
 
-**Bước 2: Thiết lập K8s Secrets (Bắt buộc cho Local 1:1)**
+**Bước 3: Thiết lập K8s Secrets (Bắt buộc cho Local 1:1)**
 Đảm bảo bạn đã có file `.env` chứa credential DB chuẩn ở thư mục dự án:
 ```bash
 # 1. Tạo SSH Key phục vụ Airflow GitSync 
@@ -58,10 +72,33 @@ kubectl create secret generic airflow-git-ssh-key --from-file=gitSshKey="$HOME\.
 kubectl create secret generic churn-db-secret --from-env-file=".env" -n default
 ```
 
-**Bước 3: Deploy Airflow qua Helm**
+**Bước 4: Deploy Airflow qua Helm**
+Vì Kubernetes nội bộ của `kind` chỉ hỗ trợ truy cập dạng `ReadWriteOnce` (ổ đĩa gắn một lần), ta cần tạo trước PVC cho log trước khi cho Helm chạy.
+
+Chạy lệnh tạo PVC:
 ```bash
-helm repo add apache-airflow https://airflow.apache.org
-helm repo update
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: local-logs-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+```
+
+Sau đó tiến hành cài đặt Airflow:
+```bash
+# Nếu mạng tải chart từ repo online bị lỗi, có thể dùng file offline:
+# .\helm upgrade --install airflow .\airflow-1.21.0.tgz --namespace default -f infrastructure/helm/airflow/values.yaml -f infrastructure/helm/airflow/values-local.yaml
+
+.\helm repo add apache-airflow https://airflow.apache.org
+.\helm repo update
 
 # Triển khai / Nâng cấp Airflow với cấu hình GitSync và Logs PVC
 .\helm upgrade --install airflow apache-airflow/airflow \
@@ -70,20 +107,7 @@ helm repo update
   -f infrastructure/helm/airflow/values-local.yaml
 ```
 
-> [!TIP]
-> **Cài đặt Offline (Xử lý lỗi mạng/VPN chặn kết nối tới Apache)**
-> Nếu chạy lệnh trên bị lỗi dạng `dial tcp... Timeout`, nguyên nhân là do mạng công ty/Firewall chặn dòng lệnh tải file ngầm. Cách xử lý:
-> 1. Truy cập trình duyệt web tải file thủ công: `https://downloads.apache.org/airflow/helm-chart/1.21.0/airflow-1.21.0.tgz`
-> 2. Đặt file `airflow-1.21.0.tgz` vào thư mục gốc dự án.
-> 3. Chạy lệnh cài đặt trực tiếp bằng file (thay thế cho Bước 3 ở trên):
->    ```bash
->    .\helm upgrade --install airflow .\airflow-1.21.0.tgz \
->      --namespace default \
->      -f infrastructure/helm/airflow/values.yaml \
->      -f infrastructure/helm/airflow/values-local.yaml
->    ```
-
-**Bước 4: Truy cập và Theo dõi**
+**Bước 5: Truy cập và Theo dõi**
 ```bash
 # Ánh xạ cổng để truy cập UI ở http://localhost:8080 (Tài khoản: admin / admin)
 kubectl port-forward svc/airflow-api-server 8080:8080 -n default
@@ -91,7 +115,7 @@ kubectl port-forward svc/airflow-api-server 8080:8080 -n default
 Khi bạn bật DAG (vd: `ds_churn_pipeline`), K8s sẽ tự động sinh ra các Pod độc lập (tên dạng `churn-pipeline-v2-pod-xxxxx`) để chạy task tính toán và tắt đi sau khi hoàn tất.
 
 > [!NOTE] 
-> Lưu ý về OS Path: Nếu test local trên Docker Desktop Windows bằng tính năng `host_path` trong DAG Operator, bắt buộc dùng đường dẫn dạng Linux-node chuẩn: `/run/desktop/mnt/host/d/Churn_Prediction_Product/...` thay vì format ổ đĩa `D:\...` để tránh lỗi parse volume.
+> Lưu ý về OS Path: Việc mount ổ đĩa Windows đã được xử lý ở tầng cluster qua file `kind-config.yaml`. Các file DAG chỉ cần sử dụng đường dẫn chuẩn của container: `path="/churn_data"`.
 **Bước 5: Cài đặt Giám sát (Prometheus & Grafana)**
 Trên hệ thống máy ảo độc lập, chúng ta cần cài đặt Stack Giám sát để theo dõi tài nguyên RAM/CPU nếu không sẽ bị mù thông tin.
 ```bash
