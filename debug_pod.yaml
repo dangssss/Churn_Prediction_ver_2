@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug-mount
+spec:
+  containers:
+  - name: debug
+    image: busybox
+    command: ["sh", "-c", "echo '=== /churn_data ===' && ls /churn_data/ && echo '=== incoming ===' && ls /churn_data/incoming/ && sleep 60"]
+    volumeMounts:
+    - name: data
+      mountPath: /churn_data
+  volumes:
+  - name: data
+    hostPath:
+      path: /run/desktop/mnt/host/d/Churn_Prediction_v2/data
+  restartPolicy: Never
