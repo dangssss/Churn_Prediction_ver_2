@@ -1,0 +1,8 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: churn-local-k8s
+nodes:
+- role: control-plane
+  extraMounts:
+  - hostPath: "D:\\Churn_Prediction_v2\\data"
+    containerPath: /churn_data
