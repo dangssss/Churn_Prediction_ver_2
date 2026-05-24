@@ -109,14 +109,14 @@ grafana:
   resources:
     requests:
       cpu: 50m
-      memory: 128Mi
+      memory: 256Mi
     limits:
       cpu: 200m
-      memory: 256Mi
+      memory: 512Mi
   persistence:
     type: pvc
-    enabled: true
-    storageClassName: "hostpath"
+    enabled: false
+    storageClassName: "standard"
     accessModes:
       - ReadWriteOnce
     size: 2Gi
@@ -145,7 +145,7 @@ prometheus:
     storageSpec:
       volumeClaimTemplate:
         spec:
-          storageClassName: "hostpath"
+          storageClassName: "standard"
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:

@@ -4,5 +4,5 @@ name: churn-local-k8s
 nodes:
 - role: control-plane
   extraMounts:
-  - hostPath: "D:\\Churn_Prediction_v2\\data"
+  - hostPath: "b:\\ssss\\Churn_Prediction\\data"
     containerPath: /churn_data
