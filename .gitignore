@@ -77,3 +77,10 @@ Thumbs.db
 .aider/
 .continue/
 .codeium/
+.gemini/
+.cline/
+.roo/
+.agents/
+
+# Documentation & Conventions (ignored per user request)
+Coding_conventions/
