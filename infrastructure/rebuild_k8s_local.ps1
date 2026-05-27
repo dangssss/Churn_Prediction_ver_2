@@ -2,19 +2,13 @@ Write-Host "==============================================" -ForegroundColor Cya
 Write-Host "[*] REBUILD LOCAL KUBERNETES CLUSTER (KIND)" -ForegroundColor Cyan
 Write-Host "==============================================" -ForegroundColor Cyan
 
-# 1. Download kind.exe if not present
-$kind_exe = "kind.exe"
-$kind_url = "https://kind.sigs.k8s.io/dl/v0.22.0/kind-windows-amd64"
+# 1. Verify kind is installed
 if (-not (Get-Command kind -ErrorAction SilentlyContinue)) {
-    if (-not (Test-Path ".\kind.exe")) {
-        Write-Host "`n[*] Downloading Kind tool..." -ForegroundColor Yellow
-        Invoke-WebRequest -Uri $kind_url -OutFile ".\kind.exe"
-        Write-Host "[+] Downloaded kind.exe" -ForegroundColor Green
-    }
-    $kind_cmd = ".\kind.exe"
-} else {
-    $kind_cmd = "kind"
+    Write-Host "[!] 'kind' command not found. Please install Kind globally and add to PATH." -ForegroundColor Red
+    Pause
+    exit 1
 }
+$kind_cmd = "kind"
 
 # 2. Delete old cluster
 Write-Host "`n[-] Deleting old cluster (if any)..." -ForegroundColor Yellow
@@ -22,7 +16,7 @@ Write-Host "`n[-] Deleting old cluster (if any)..." -ForegroundColor Yellow
 
 # 3. Create new cluster
 Write-Host "`n[*] Creating new Kubernetes cluster with extraMounts..." -ForegroundColor Yellow
-& $kind_cmd create cluster --config infrastructure\kind\kind-config.yaml
+& $kind_cmd create cluster --config kind\kind-config.yaml
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[!] Error creating cluster. Please ensure Kubernetes is disabled in Docker Desktop!" -ForegroundColor Red
     Pause
@@ -31,10 +25,10 @@ if ($LASTEXITCODE -ne 0) {
 
 # 4. Build Docker image and load into Kind
 Write-Host "`n[*] Building Docker Image and loading into Kind Node..." -ForegroundColor Yellow
-docker build -t churn_app:v2 -f infrastructure/Dockerfile.app .
+docker build -t churn_app:v2 -f Dockerfile.app ..
 & $kind_cmd load docker-image churn_app:v2 --name churn-local-k8s
 
-docker build -t churn_app_airflow:latest -f infrastructure/Dockerfile.airflow .
+docker build -t churn_app_airflow:latest -f Dockerfile.airflow ..
 & $kind_cmd load docker-image churn_app_airflow:latest --name churn-local-k8s
 
 # 5. Setup K8s Secrets & Storage
@@ -65,15 +59,16 @@ kubectl apply -f .\local-logs-pvc.yaml
 
 # 6. Deploy Airflow via Helm
 Write-Host "`n[*] Deploying Airflow via Helm..." -ForegroundColor Yellow
-if (Test-Path ".\airflow-1.21.0.tgz") {
-    Write-Host "[*] Found offline chart airflow-1.21.0.tgz. Installing offline..." -ForegroundColor Yellow
-    .\helm upgrade --install airflow .\airflow-1.21.0.tgz --namespace default -f infrastructure/helm/airflow/values.yaml -f infrastructure/helm/airflow/values-local.yaml
-} else {
-    Write-Host "[*] Installing from online repository..." -ForegroundColor Yellow
-    .\helm repo add apache-airflow https://airflow.apache.org
-    .\helm repo update
-    .\helm upgrade --install airflow apache-airflow/airflow --namespace default -f infrastructure/helm/airflow/values.yaml -f infrastructure/helm/airflow/values-local.yaml
+if (-not (Get-Command helm -ErrorAction SilentlyContinue)) {
+    Write-Host "[!] 'helm' command not found. Please install Helm globally and add to PATH." -ForegroundColor Red
+    Pause
+    exit 1
 }
+
+Write-Host "[*] Installing from online repository..." -ForegroundColor Yellow
+helm repo add apache-airflow https://airflow.apache.org
+helm repo update
+helm upgrade --install airflow apache-airflow/airflow --namespace default -f helm/airflow/values.yaml -f helm/airflow/values-local.yaml
 
 Write-Host "`n[+] DONE!" -ForegroundColor Green
 Write-Host "Local K8s Cluster created successfully with D: drive mounted." -ForegroundColor Cyan
