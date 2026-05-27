@@ -1,4 +1,4 @@
-# DS Churn — Hệ thống Dự đoán Rời bỏ Khách hàng
+# DS Churn Prediction — Hệ thống Dự đoán Rời bỏ Khách hàng
 
 Hệ thống ML pipeline end-to-end dự đoán khách hàng có nguy cơ rời bỏ (churn) dịch vụ chuyển phát, được thiết kế theo kiến trúc **Modular Monolith** và orchestrate qua **Apache Airflow** trên **Kubernetes**.
 
@@ -6,32 +6,19 @@ Hệ thống ML pipeline end-to-end dự đoán khách hàng có nguy cơ rời 
 
 ---
 
-## 1. Tổng quan Bài toán
+## 1. Mục tiêu hệ thống
 
-### 1.1 Mục tiêu
-Dự đoán khách hàng nào sẽ ngừng sử dụng dịch vụ trong **H tháng tới** (mặc định H=2), từ đó:
-- Phát hiện sớm khách hàng có xu hướng rời bỏ
-- Cung cấp danh sách rủi ro hàng tháng cho bộ phận CSKH
-- Đưa ra lý do churn (top-3 feature ảnh hưởng) cho mỗi khách hàng
+DS Churn Prediction là hệ thống ML pipeline end-to-end dùng để phát hiện sớm các khách hàng có rủi ro rời bỏ (churn) dịch vụ chuyển phát. Hệ thống nhận dữ liệu giao dịch/khách hàng/khiếu nại theo tháng, tạo feature dạng lifetime và sliding window, chuẩn bị dataset churn bằng các kỹ thuật nâng cao (EWMA, walk-forward validation, pseudo-labeling), huấn luyện XGBoost, score toàn bộ khách hàng active và ghi kết quả vào PostgreSQL.
 
-### 1.2 Định nghĩa Churn
-- **y = 1** (churn): Khách hàng **không có item lẫn không có doanh thu** (`item_count == 0 AND total_fee == 0`) trong horizon [T+1, T+H]
-- **y = 0** (active): Khách hàng có ít nhất 1 item HOẶC doanh thu > 0 trong horizon
-
-### 1.3 Dữ liệu đầu vào
-| Nguồn | Mô tả |
-|-------|--------|
-| `public.cas_customer` | Bảng giao dịch hàng tháng (item_count, total_fee, complaint, satisfaction, delay...) |
-| `data_window.cus_feature_*` | Bảng sliding window features đã tính |
-| CSKH evaluation files | Danh sách confirmed churners từ bộ phận Chăm sóc Khách hàng (format: `Roi_bo_MM_YY.csv`) |
+**Output nghiệp vụ chính:** Mỗi chu kỳ, hệ thống cập nhật danh sách các khách hàng có rủi ro cao (`churn_flag = 1`) kèm theo xác suất churn và top-3 lý do ảnh hưởng nhiều nhất vào bảng `data_static.churn_risk_predictions` để bộ phận CSKH có kế hoạch chủ động liên hệ giữ chân.
 
 ---
 
-## 2. Kỹ thuật & Phương pháp (Luồng Xử lý & Prototype)
+## 2. Kiến trúc tổng quan hiện tại
 
-### 2.1 Pipeline Tổng Quan (System Flow)
+Hệ thống được thiết kế theo mô hình **Python Modular Monolith** phối hợp với **Apache Airflow Orchestration** và thực thi thông qua các isolated **KubernetesPodOperators**.
 
-Dưới đây là sơ đồ luồng dữ liệu toàn hệ thống từ khâu kéo dữ liệu (Ingestion) qua xử lý (Window Aggregation), tính toán đặc trưng (Dataset Prep) đến dự đoán và xuất kết quả:
+### 2.1 Sơ đồ luồng dữ liệu & DAG Chain
 
 ```mermaid
 flowchart TD
@@ -173,306 +160,244 @@ Sau đó, tiến hành thiết lập cơ chế đánh trọng số mẫu (Sample
 
 ---
 
-## 3. Kiến trúc Hệ thống
-
-### 3.1 Cấu trúc thư mục
+## 3. Cấu trúc thư mục thực tế
 
 ```text
-ds_churn/
-├── dags/                           # Airflow DAGs
-│   ├── ds_churn_ingest.py          #   Scheduled: scan ZIP → validate
-│   ├── ds_churn_features.py        #   Triggered: feature generation
-│   ├── ds_churn_pipeline.py        #   Triggered: dataset prep + model v2
-│   ├── ds_churn_eda.py             #   Manual: run EDA reports
-│   └── ds_churn_housekeeping.py    #   Scheduled: cleanup old bundles
-│
-├── src/                            # Source code (pip install -e .)
-│   ├── config/                     #   Centralized config (Pydantic-based)
-│   │   ├── settings.py             #     Root AppSettings (composes all subsystem configs)
-│   │   ├── db_config.py            #     PostgresConfig (PG_HOST, PG_PORT, PG_DB, PG_USER, PG_PW)
-│   │   └── paths.py                #     FSConfig (INCOMING/SAVED/FAIL_DIR) + ModelPathsConfig
+Churn_Prediction/
+├── dags/                               # Các DAGs định nghĩa luồng chạy trong Airflow
+│   ├── ds_churn_ingest.py              #   Scheduled: Ingest dữ liệu ZIP từ folder incoming
+│   ├── ds_churn_features.py            #   Triggered: Sinh dữ liệu features (lifetime + window)
+│   ├── ds_churn_eda.py                 #   Triggered: Sinh báo cáo phân tích dữ liệu (EDA) song song với features
+│   ├── ds_churn_pipeline.py            #   Triggered: Huấn luyện, đánh giá, kiểm duyệt và chấm điểm khách hàng
+│   └── ds_churn_housekeeping.py        #   Scheduled: Dọn dẹp dữ liệu cũ (daily 03:00)
+├── src/                                # Source code của project (install dạng editable mode)
+│   ├── config/                         #   Cấu hình hệ thống (settings, paths, db_config...)
 │   ├── data/
-│   │   ├── ingestion/              #   Data extraction and loading logic
-│   │   ├── preprocessing/          #   Data handling logic (transformations)
-│   │   │   └── dataset_prep/       #   13 modules (scope→tier→EWMA→W*→prototype→pseudo→weight→sanity)
-│   │   └── validation/             #   Data quality checks (schema validation)
-│   ├── features/
-│   │   └── engineering/
-│   │       └── feature_gen/        #   Sliding window SQL + aggregation
+│   │   ├── ingestion/                  #   Luồng nhận diện, giải nén và nạp dữ liệu nguyên bản
+│   │   ├── preprocessing/dataset_prep/ #   7 bước xử lý dữ liệu đầu vào cho mô hình
+│   │   ├── validation/                 #   Chương trình validate schema dữ liệu nguồn
+│   │   └── eda/                        #   Bộ công cụ sinh HTML report phục vụ phân tích EDA
+│   ├── features/engineering/feature_gen/ #   Tính toán lifetime và sliding-window features
 │   ├── modeling/
-│   │   ├── config/                 #   ModelConfig (XGBoost hyperparams)
-│   │   ├── train/                  #   trainer, evaluator, guardrail
-│   │   ├── export/                 #   scorer, risk_table
-│   │   ├── common/                 #   artifacts (save/load bundles via joblib)
-│   │   └── config_store/           #   best_config (accept/reject history in DB)
-│   ├── pipelines/
-│   │   └── monthly/                #   monthly_v2.py & monthly_v2_cli.py (8-step orchestrator)
-│   ├── monitoring/                 #   Production monitoring
-│   │   ├── data_quality/           #     Data quality monitoring
-│   │   └── model_quality/          #     Model quality monitoring
-│   ├── scripts/                    #   Database initialization & utils
-│   │   ├── init_db_schemas.py      #     DB setup script
-│   │   └── check_db_status.py      #     DB health checks
-│   └── shared/                     #   Shared utilities
-│       ├── db.py                   #     get_engine() — SQLAlchemy engine factory
-│       └── logging_config.py       #     configure_logging() — rotating file + console
-│
-├── data/                           # Data storage (mount data volumes)
-├── logs/                           # Runtime logs
-├── tests/                          # Unit tests (105 tests)
-├── model_bundles/                  # Stored model artifacts
-├── infrastructure/                 # Docker + Helm charts
-│   ├── Dockerfile.app              #   Application image (churn_app:latest)
-│   ├── Dockerfile.airflow          #   Airflow image
-│   ├── docker-compose.yaml         #   Local development stack
-│   └── helm/
-│       ├── airflow/                #   Airflow Helm values (values.yaml + values-local.yaml)
-│       └── monitoring/             #   Kube-prometheus-stack Helm values
-│
-├── docs/                           # Tài liệu chi tiết
-│   ├── architecture/               #   System architecture, data flow, deployment guide
-│   ├── operations/                 #   Monitoring guide, troubleshooting, incident response
-│   ├── models/                     #   Model card, feature docs, performance reports
-│   ├── adr/                        #   Architecture Decision Records
-│   └── api/                        #   API spec + client examples
-│
-├── Coding_conventions/             # Project coding standards (18 files)
-├── pyproject.toml                  # Packaging & tool config
-├── .env.example                    # Example database credentials
-└── .env                            # Database credentials (not committed)
+│   │   ├── common/                     #   Kiểu dữ liệu chung và các utils lưu trữ artifacts
+│   │   ├── config/                     #   Tham số cấu hình của XGBoost và metrics
+│   │   ├── config_store/               #   Đồng bộ DB trạng thái accept/reject model
+│   │   ├── export/                     #   Tính toán lý do và ghi nhận kết quả rủi ro vào DB
+│   │   ├── sql/                        #   Các câu truy vấn SQL liên quan đến scoring/predict
+│   │   └── train/                      #   Trainer, Evaluator và Guardrail chất lượng model
+│   ├── monitoring/model_quality/monitoring/ #   Tính toán chỉ số PSI, Drift, Backtest chất lượng
+│   ├── pipelines/monthly/              #   monthly_v2.py (Orchestrator chính) và CLI wrapper
+│   ├── scripts/                        #   Bộ scripts khởi tạo schema & kiểm tra trạng thái DB
+│   └── shared/                         #   Module dùng chung (kết nối DB engine, logging setup)
+├── tests/                              # Bộ kiểm thử Unit test của hệ thống (~149 test functions)
+├── docs/                               # Thư mục chứa các tài liệu chi tiết (ADR, C4 spec...)
+├── infrastructure/                     # Helm chart và Docker configuration
+│   ├── Dockerfile.app                  #   Dockerfile build ứng dụng chính (churn_app:v2)
+│   ├── Dockerfile.airflow              #   Dockerfile build custom Airflow webserver/scheduler
+│   ├── docker-compose.yaml             #   Setup môi trường local dev đầy đủ
+│   ├── helm/                           #   Bản phân phối Helm values cho Airflow & Monitoring
+│   └── kind/                           #   Cấu hình cụm Kubernetes local (Kind)
+├── model_bundles/bundles/latest/       # Folder lưu trữ XGBoost model bundle đã được accepted
+├── data/                               # Chứa dữ liệu (incoming, saved, failed)
+├── pyproject.toml                      # Cấu hình package, pytest và ruff linter
+├── requirements.txt                    # Danh sách các thư viện Python cài đặt
+├── .env.example                        # Mẫu định dạng cấu hình biến môi trường
+└── README.md                           # File tài liệu hướng dẫn này
 ```
-
-### 3.2 Luồng Vận hành Production (End-to-End Data Flow)
-
-```mermaid
-flowchart TD
-    Trigger(["Trigger: Ngày 13 và 23 hàng tháng, 09:00"])
-
-    Files["ZIP files từ FTP / CSKH"]
-    Trigger --> Files
-
-    Ingest["DAG: ds_churn_ingest - Scan và Load ZIP"]
-    Files --> Ingest
-
-    Features["DAG: ds_churn_features - Sliding window"]
-    Ingest --> Features
-
-    Pipeline["DAG: ds_churn_pipeline - Thực thi 8 steps"]
-    Features --> Pipeline
-
-    Guardrail{"Guardrail: F0.5 >= 0.10 và PR-AUC >= 0.05?"}
-    Pipeline --> Guardrail
-
-    Fail["Pipeline dừng - Ghi log lỗi"]
-    Guardrail -->|"FAIL"| Fail
-
-    AcceptReject{"Accept/Reject: new F0.5 gt prev F0.5?"}
-    Guardrail -->|"PASS"| AcceptReject
-
-    Save["Lưu model mới - model_bundles/latest"]
-    Keep["Giữ model cũ"]
-    AcceptReject -->|"Accept"| Save
-    AcceptReject -->|"Reject"| Keep
-
-    ScoreNew["Score tất cả KH active - model MỚI"]
-    ScoreOld["Score tất cả KH active - model CŨ"]
-    Save --> ScoreNew
-    Keep --> ScoreOld
-
-    Export[("Export Risk Table - churn_risk_predictions")]
-    ScoreNew --> Export
-    ScoreOld --> Export
-
-    CSKH(["Bộ phận CSKH truy vấn danh sách rủi ro"])
-    Export --> CSKH
-
-    Housekeeping(["DAG: ds_churn_housekeeping - Hàng ngày 03:00"])
-    Export -. "chạy độc lập theo cron" .-> Housekeeping
-```
-
-**Tóm tắt luồng:**
-1. **Trigger tự động**: ZIP files được drop vào `incoming/` → DAG `ds_churn_ingest` quét ngày 13 & 23 hàng tháng lúc 09:00.
-2. **Chain reaction**: Ingest thành công → tự động trigger `ds_churn_features` → tự động trigger `ds_churn_pipeline`.
-3. **Output**: Bảng `data_static.churn_risk_predictions` được TRUNCATE và ghi mới mỗi lần chạy — luôn là snapshot mới nhất.
-4. **CSKH consume**: Bộ phận CSKH query trực tiếp từ PostgreSQL hoặc export CSV từ bảng risk.
-
-### 3.3 Airflow DAG Chain
-
-Hệ thống xử lý logic dự đoán hàng tháng qua một chu trình 8 bước tuần tự chặt chẽ, tách biệt rạch ròi quá trình Train và Inference:
-
-| DAG | Schedule | Trigger | Retries | Mô tả |
-|-----|----------|---------|---------|--------|
-| `ds_churn_ingest` | `0 9 13,23 * *` | Cron | 2 | Scan ZIP → Load DB → Validate → trigger features |
-| `ds_churn_features` | None | Triggered by ingest | 1 | Sliding window feature generation → trigger pipeline |
-| `ds_churn_pipeline` | None | Triggered by features | 0 | Full 8-step pipeline (dataset prep + model + score + export) |
-| `ds_churn_housekeeping` | `0 3 * * *` | Cron (hàng ngày) | 0 | Dọn bundles cũ, logs, saved/failed data |
-
-Tất cả tasks chạy qua **KubernetesPodOperator** — mỗi task là 1 isolated Pod với image `churn_app:latest`. Pod tự hủy sau khi hoàn thành (`is_delete_operator_pod=True`).
-
-### 3.4 Monthly v2 Pipeline — 8 Steps
-
-```
-Step 1: Dataset Prep         → DatasetResult (x_train, y_train, w_train, x_eval, y_eval, x_predict)
-Step 2: Train XGBoost        → Booster model
-Step 3: Evaluate             → F0.5, PR-AUC, threshold
-Step 4: Guardrail            → Pass/Fail (min quality gates)
-Step 5: Accept/Reject        → Compare F0.5 vs previous accepted model
-Step 6: Save Bundle          → joblib model + metadata.json to disk
-Step 7: Score All            → churn_probability + churn_flag for all active customers
-Step 8: Export Risk Table    → TRUNCATE + INSERT predictions to PostgreSQL
-```
-
-**Chi tiết Step 7 — Scoring Logic:**
-- Score **tất cả** khách hàng active (không chỉ flagged)
-- Tính `churn_probability` cho mỗi KH
-- Áp dụng **dynamic threshold**: lấy percentile thứ 90 (top 10%) của phân phối probability → so sánh với threshold từ evaluation → chọn giá trị cao hơn
-- Kết quả: chỉ ~10% KH có `churn_flag = 1` → tránh gửi alert quá nhiều cho CSKH
-- Với mỗi KH flagged, tính **top-3 reasons** dựa trên global feature importance (gain) của XGBoost
-
-### 3.5 Fallback Mode (khi thiếu CSKH file)
-
-Hệ thống hỗ trợ **Fallback Mode** khi không có file CSKH (confirmed churn list) mới:
-
-```
-Có CSKH file? ─── Có ──→ Build prototype mới → Cache vào DB → Pseudo-labeling bình thường
-       │
-       Không
-       │
-       ▼
-allow_prototype_fallback = True? ─── Không ──→ ⛔ Pipeline dừng + báo lỗi
-       │
-       Có
-       │
-       ▼
-Có cached prototype trong DB (< 3 tháng)? ─── Không ──→ ⛔ Pipeline dừng
-       │
-       Có
-       │
-       ▼
-✅ FALLBACK MODE: Dùng cached prototype
-   - PU weight dùng giá trị ước lượng (fallback_pu_weight = 0.05)
-   - eval_ids rỗng → model evaluation bị skip
-   - Pipeline vẫn chạy scoring bình thường
-   - Log WARNING rõ ràng để team biết
-```
-
-**Khi nào xảy ra Fallback:**
-- Bộ phận CSKH chưa gửi file đánh giá tháng mới
-- File CSV bị lỗi format hoặc không có cột `cms_code_enc`
-- Thư mục CSKH trống
-
-**Giới hạn:** Prototype fallback tối đa **3 tháng** (`max_prototype_age_months`). Nếu quá hạn, pipeline sẽ dừng và yêu cầu CSKH cung cấp dữ liệu mới.
 
 ---
 
-## 4. Database Schema
+## 4. Dữ liệu đầu vào và Database Schema
 
-### 4.1 Các bảng/schema chính
+### 4.1 Các bảng nguồn Production
 
-| Schema | Bảng | Mô tả | Ghi bởi |
-|--------|------|-------|---------|
-| `public` | `cas_customer` | Giao dịch hàng tháng gốc (raw transactional data) | Ingestion pipeline |
-| `data_static` | `cus_lifetime` | Tổng hợp lifetime metrics (tenure, lifetime_total_items, ...) | Feature gen |
-| `data_window` | `cus_feature_{W}m_{YYMM}` | Sliding window features (W tháng, tính đến YYMM) | Feature gen |
-| `data_static` | `churn_risk_predictions` | **Output chính** — danh sách KH rủi ro | Monthly pipeline Step 8 |
-| `data_static` | `best_config` | Lịch sử accept/reject model (F0.5, threshold, ...) | Monthly pipeline Step 5 |
-| `cskh` | `confirmed_churners` | Danh sách confirmed churners load từ CSV | CSKH loader |
-| `data_static` | `prototype_cache` | Cached leading prototype (μ, Σ⁻¹) cho fallback mode | Dataset prep Step 5 |
+Ingestion hỗ trợ nạp dữ liệu định kỳ từ 4 nhóm bảng chính nằm ở schema `public`:
 
-### 4.2 Output Schema — `data_static.churn_risk_predictions`
+| Tên bảng nguồn | Định dạng nạp dữ liệu | Vai trò / Ý nghĩa |
+|---|---|---|
+| `bccp_orderitem` / `bccp_orderitem_YYMM` | Transaction chi tiết | Thông tin chi tiết về từng đơn hàng, sản phẩm, trạng thái và cước phí theo từng tháng |
+| `cas_customer` | Tổng hợp khách hàng theo tháng | Bảng chứa doanh thu tổng, số đơn, số ngày hoạt động, khiếu nại của từng khách hàng hàng tháng |
+| `cas_info` | Thông tin hồ sơ khách hàng | Lưu thông tin định danh, ngày ký hợp đồng, nhóm ngành hàng phục vụ tính toán tenure/lifetime |
+| `cms_complaint` | Dữ liệu khiếu nại | Lưu thông tin các khiếu nại của khách hàng làm tín hiệu chất lượng dịch vụ |
 
-Đây là bảng sản phẩm cuối cùng mà bộ phận CSKH truy vấn:
+### 4.2 Các schema và phân vùng dữ liệu chính trong PostgreSQL
 
-| Cột | Kiểu | Mô tả |
-|-----|------|-------|
-| `id` | SERIAL PK | Auto-increment |
-| `cms_code_enc` | VARCHAR(100) | Mã khách hàng (encrypted) |
-| `churn_probability` | FLOAT | Xác suất churn (0.0 → 1.0) |
-| `churn_flag` | INT | 1 = rủi ro cao, 0 = bình thường |
-| `threshold_used` | FLOAT | Ngưỡng phân loại đã dùng |
-| `reason_1` | TEXT | Lý do churn hàng đầu (vd: "High pct_delay") |
-| `reason_2` | TEXT | Lý do thứ 2 |
-| `reason_3` | TEXT | Lý do thứ 3 |
-| `scored_at` | TIMESTAMP | Thời điểm scoring |
-| `window_end` | INT | Tháng cuối của feature window (YYMM) |
-| `w_star` | INT | Window size tối ưu W* |
-| `horizon` | INT | Horizon dự đoán (mặc định: 2) |
+Hệ thống quản lý dữ liệu chặt chẽ qua các schema chuyên biệt để bảo đảm tính bảo mật và tối ưu hóa truy vấn:
 
-**Lưu ý**: Bảng được **TRUNCATE** trước mỗi lần insert → luôn chứa snapshot mới nhất, không tích lũy dữ liệu cũ.
-
-### 4.3 Model Config History — `data_static.best_config`
-
-| Cột | Mô tả |
-|-----|-------|
-| `as_of_month` | Tháng chạy (YYMM, vd: 2604) |
-| `horizon` | Horizon dự đoán |
-| `best_threshold` | Threshold tối ưu từ evaluation |
-| `metric_f1_val` | F0.5 score (stored in legacy F1 column) |
-| `metric_pr_auc_val` | PR-AUC score |
-| `is_accepted` | Model có được chấp nhận không |
-| `accept_rule` | Lý do accept/reject |
-| `prev_accepted_f1` | F0.5 của model trước |
-| `accepted_at` | Timestamp |
+| Schema | Đối tượng / Bảng | Ý nghĩa sử dụng |
+|---|---|---|
+| `public` | `cas_customer`, `cas_info`, `cms_complaint`, `bccp_orderitem_YYMM` | Chứa dữ liệu thô (raw) và các bảng giao dịch tháng sau khi Ingest thành công |
+| `ingest` | `ingest_log` | Ghi chép lịch sử file ZIP đã ingest (MD5 hash, số dòng nạp thành công, timestamp) |
+| `data_static` | `cus_lifetime` | Bảng tích lũy lifetime metrics của khách hàng tính từ lúc hoạt động |
+| `data_static` | `churn_risk_predictions` | Bảng **sản phẩm cuối** chứa danh sách khách hàng có rủi ro cao CSKH cần liên hệ |
+| `data_static` | `best_config` | Lịch sử chấp nhận/từ chối mô hình mới và các thông số đánh giá (F0.5, PR-AUC, Threshold...) |
+| `data_static` | `prototype_cache` | Lưu trữ trung tâm trọng tâm $\mu$ và ma trận hiệp phương sai $\Sigma^{-1}$ phục vụ Fallback Mode |
+| `data_window` | `cus_feature_{W}m_{startYYMM}_{endYYMM}` | Bảng sliding-window feature được pivot động theo cấu trúc thời gian thực tế |
+| `cskh` | `confirmed_churners` | Tập danh sách khách hàng xác nhận rời bỏ thu thập từ CSKH |
 
 ---
 
-## 5. Danh sách Feature đầy đủ
+## 5. Airflow DAGs hiện tại
 
-Hệ thống sử dụng **70+ features** được nhóm như sau:
+Toàn bộ các tác vụ xử lý ML nặng được cô lập trong **KubernetesPodOperator** sử dụng Docker Image `churn_app:v2`. Cơ chế này loại bỏ hoàn toàn rủi ro rò rỉ bộ nhớ hoặc xung đột tài nguyên trên Airflow Node.
 
-### 5.1 Transaction Volume (Khối lượng giao dịch)
+| Tên DAG | Chu kỳ chạy (Schedule) | Tác nhân kích hoạt | Command trong Pod | Ý nghĩa / Vai trò |
+|---|---|---|---|---|
+| `ds_churn_ingest` | `0 9 13,23 * *` | Cron định kỳ | `python -m data.ingestion.cli scan --prod-schema public --ingest-schema ingest --xcom-out /airflow/xcom/return.json` | Quét folder `incoming`, giải nén file ZIP mới, validate cấu trúc, nạp dữ liệu PostgreSQL, ghi ingest log, trigger song song `ds_churn_features` và `ds_churn_eda` |
+| `ds_churn_features` | Không (None) | Trigger bởi `ds_churn_ingest` | `python -m features.engineering.feature_gen.run_feature_generation --start 2025-01-01 --incremental` | Cập nhật bảng `cus_lifetime` và tính toán sliding window feature cho tất cả window size, trigger `ds_churn_pipeline` |
+| `ds_churn_eda` | Không (None) | Trigger bởi `ds_churn_ingest` | `python -m data.eda.run_eda` | Chạy song song độc lập với features để phân tích chất lượng dữ liệu và xuất báo cáo EDA định kỳ dưới dạng HTML |
+| `ds_churn_pipeline` | Không (None) | Trigger bởi `ds_churn_features` | `python -m pipelines.monthly.monthly_v2_cli` | Thực thi tuần tự 8 bước của pipeline: dataset prep → train XGBoost → evaluate → quality guardrail → accept/reject → score all → export DB |
+| `ds_churn_housekeeping` | `0 3 * * *` | Cron định kỳ hằng ngày | Inline Bash script | Dọn dẹp logs, các folder dữ liệu tạm (`incoming`/`saved`/`failed`) và chỉ giữ lại số lượng Model Bundle cấu hình tối đa |
 
-| Feature | Mô tả |
-|---------|--------|
-| `item_sum` | Tổng số item trong window |
-| `item_avg` | Trung bình item/tháng |
-| `item_std` | Độ lệch chuẩn item |
-| `item_median` | Trung vị item |
-| `revenue_sum` | Tổng doanh thu |
-| `revenue_avg` | Trung bình doanh thu/tháng |
-| `revenue_std` | Độ lệch chuẩn doanh thu |
+### 5.1 Volumes Mount và Secrets trong DAGs
 
-### 5.2 Service Quality (Chất lượng dịch vụ)
+- **Mount Path**: Các Pod thực thi ML mount thư mục dữ liệu từ Kind Node `/churn_data` vào thẳng `/churn_data` trong Container để đọc ghi file ZIP và CSKH.
+- **Secrets Injection**: Thông tin xác thực PostgreSQL được tải động từ Kubernetes Secret có tên `churn-db-secret` và inject vào các biến môi trường của container lúc runtime để đảm bảo bảo mật.
 
-| Feature | Mô tả |
-|---------|--------|
-| `complaint_sum` | Tổng số khiếu nại |
-| `complaint_avg` | Trung bình khiếu nại/tháng |
-| `weight_sum` | Tổng trọng lượng hàng |
-| `weight_avg` | Trung bình trọng lượng/tháng |
-| `avg_revenue_per_item` | Doanh thu trung bình mỗi item |
-| `pct_delay` | % đơn hàng bị delay |
-| `pct_refund` | % đơn hoàn trả |
-| `pct_noaccepted` | % đơn không được chấp nhận |
-| `pct_lost_order` | % đơn bị mất |
-| `pct_complaint` | % khiếu nại trên tổng đơn |
-| `pct_successful_item` | % item giao thành công |
-| `avg_delayday` | Số ngày delay trung bình |
+---
 
-### 5.3 Customer Satisfaction (Hài lòng khách hàng)
+## 6. Luồng Ingestion Chi Tiết
 
-| Feature | Mô tả |
-|---------|--------|
-| `order_score_avg` | Điểm đánh giá đơn hàng trung bình |
-| `satisfaction_avg` | Điểm hài lòng trung bình |
+Entry point thực thi: `python -m data.ingestion.cli scan`.
 
-### 5.4 Geographic (Địa lý)
+Khi có file ZIP được đẩy vào thư mục `incoming/`, tiến trình Ingestion sẽ thực thi tuần tự theo các bước:
 
-| Feature | Mô tả |
-|---------|--------|
-| `pct_intra_province` | % đơn nội tỉnh |
-| `pct_international` | % đơn quốc tế |
+```
+[Incoming ZIP detected] 
+        │
+        ▼
+[Tính MD5 & So sánh DB] ─── (Đã tồn tại MD5) ───► [SKIP: Báo trùng lặp]
+        │ (MD5 mới)
+        ▼
+[Giải nén & Discover CSV]
+        │
+        ▼
+[Xác định bảng đích & Cấu hình Header]
+        │
+        ▼
+[Validate Header vs EXPECTED_HEADERS] ─── (Sai cấu trúc) ───► [COPY file sang 'failed']
+        │ (Khớp cấu trúc)
+        ▼
+[Transform data (Chống SQL injection, Encrypt IDs)]
+        │
+        ▼
+[Thực thi SQL COPY atomic trong Transaction] ─── (Lỗi COPY) ───► [ROLLBACK & Move sang 'failed']
+        │ (COPY thành công)
+        ▼
+[ANALYZE table + Ghi ingest_log + Move sang 'saved']
+```
 
-### 5.5 Activity & Engagement (Hoạt động)
+### Các đặc tính kỹ thuật quan trọng trong code Ingestion:
+- **Tính Idempotent**: Quyết định bỏ qua file đã xử lý dựa trên mã MD5 lưu trong bảng `ingest.ingest_log` (md5-based check) thay vì dựa trên thời gian chỉnh sửa (mtime) để tránh bị nạp trùng khi file bị sao chép qua nhiều phân vùng.
+- **Tính nguyên tử (Atomic)**: Thao tác `COPY` dữ liệu thô vào bảng production diễn ra trong cùng một SQL Transaction kèm theo `TRUNCATE` phân vùng tháng tương ứng. Nếu bất kỳ file CSV nào trong ZIP bị lỗi cấu trúc hoặc kiểu dữ liệu, toàn bộ phiên nạp dữ liệu của file ZIP đó sẽ bị `ROLLBACK` để bảo toàn tính nhất quán.
+- **Chống SQL Injection**: Tích hợp các bộ lọc và kiểm tra ký tự nguy hiểm trước khi đẩy dữ liệu vào câu lệnh COPY.
+- **Mã hóa thông tin nhạy cảm**: Sử dụng class `CustomerEncryption` để tự động hóa việc băm mã định danh khách hàng nhạy cảm trước khi lưu vào DB.
 
-| Feature | Mô tả |
-|---------|--------|
-| `active_months` | Số tháng có hoạt động |
-| `inactive_months` | Số tháng không hoạt động |
-| `active_days` | Số ngày có hoạt động |
-| `inactive_days` | Số ngày không hoạt động |
-| `avg_noservice_days` | Số ngày trung bình không sử dụng dịch vụ |
-| `avg_lastday` | Số ngày trung bình kể từ lần cuối sử dụng |
+---
+
+## 7. Feature Generation
+
+Entry point thực thi: `python -m features.engineering.feature_gen.run_feature_generation --start 2025-01-01 --incremental`.
+
+Quy trình tự động hóa việc tính toán đặc trưng:
+1. Đọc và phân tách thông tin kết nối DB thông qua biến môi trường `DATABASE_URL` hoặc credentials chi tiết.
+2. Quét kiểm tra sự tồn tại của các bảng dữ liệu nguồn bắt buộc trong `public`.
+3. Tự động nhận diện tháng kết thúc (`end_month`) gần nhất của dữ liệu bằng cách quét các phân vùng `public.bccp_orderitem_YYMM`. Nếu không tìm thấy, hệ thống sẽ fallback sang dùng giá trị `MAX(public.cas_customer.report_month)`.
+4. Khởi tạo/Cập nhật các schema `data_static` và `data_window` nếu chưa tồn tại.
+5. Tổng hợp dữ liệu trọn đời của khách hàng và lưu trữ vào bảng tĩnh `data_static.cus_lifetime`.
+6. Tính toán sliding-window features cho các mốc thời gian $W$ (ví dụ: 3 tháng, 6 tháng) dựa trên cơ chế kết hợp template SQL động.
+
+**Cấu trúc đặt tên bảng sliding-window thực tế:**
+```text
+data_window.cus_feature_{W}m_{startYYMM}_{endYYMM}
+```
+*Ví dụ thực tế:* `data_window.cus_feature_3m_2501_2503` (Window 3 tháng từ 01/2025 đến 03/2025), `data_window.cus_feature_6m_2501_2506` (Window 6 tháng từ 01/2025 đến 06/2025).
+
+---
+
+## 8. Dataset Preparation — 7 Steps
+
+Mỗi chu kỳ chạy pipeline, dữ liệu thô từ các bảng window sẽ được biến đổi qua 7 bước chuẩn bị nghiêm ngặt trước khi đưa vào mô hình học máy:
+
+```
+[Bảng window & cus_lifetime]
+             │
+             ▼
+[Step 1: Scope Filter & CSKH Load] ◄─── Đọc confirmed churners từ CSV/XLSX
+             │
+             ▼
+[Step 2: Activity Tiering] ─────────── Phân loại khách hàng (active, at_risk, churned)
+             │
+             ▼
+[Step 3: Label Construction & EWMA] ── EWMA trends & Delta dynamics ($y_{raw}$ definition)
+             │
+             ▼
+[Step 4: Walk-forward Validation] ──── Tìm window size tối ưu W*
+             │
+             ▼
+[Step 5: Leading Prototype] ────────── Build center vector $\mu$ & ma trận nghịch đảo $\Sigma^{-1}$
+             │ (Fallback dùng prototype cached trong DB nếu thiếu file CSKH)
+             ▼
+[Step 6: Pseudo-labeling] ──────────── Mahalanobis similarity & Delta trend check
+             │
+             ▼
+[Step 7: Sample Weighting] ─────────── Elkan-Noto PU weighting & Label Smoothing
+             │
+             ▼
+   [DatasetResult Output]
+```
+
+### 8.1 Chi tiết định nghĩa Churn Label
+Nhãn mục tiêu thực tế ($y_{raw}$) được định nghĩa dựa trên khoảng thời gian Horizon ($H$, mặc định là 2 tháng):
+- $y_{raw} = 1$ (Churn): Khách hàng **không phát sinh bất kỳ đơn hàng nào** và **không đem lại doanh thu** (`item_count == 0 AND total_fee == 0`) trong toàn bộ horizon $[T+1, T+H]$.
+- $y_{raw} = 0$ (Active): Khách hàng có tối thiểu 1 đơn hàng hoặc doanh thu phát sinh $> 0$ trong horizon.
+
+### 8.2 Định dạng dữ liệu đầu vào CSKH
+Mô-đun `cskh_loader.py` hỗ trợ nạp dữ liệu từ cả hai định dạng file phổ biến:
+- Tên file quy chuẩn: `Roi_bo_MM_YY.csv` hoặc `Roi_bo_MM_YY.xlsx`.
+- Trường bắt buộc có trong file: `cms_code_enc`.
+- Hệ thống hỗ trợ nạp trực tiếp qua biến `CSKH_FILE_PATH` hoặc tự động quét thư mục chỉ định `CSKH_DIR` để nạp dữ liệu vào bảng `cskh.confirmed_churners`.
+
+### 8.3 Cơ chế Fallback Prototype nâng cao
+Nếu bộ phận CSKH chưa gửi file confirmed churners mới của chu kỳ hiện tại, hệ thống hỗ trợ cơ chế tự động fallback dùng prototype cũ đã cache trong bảng `data_static.prototype_cache` nếu thỏa mãn các điều kiện:
+- `allow_prototype_fallback = True`
+- Tuổi thọ của prototype cache chưa vượt quá thời gian tối đa: `max_prototype_age_months = 3`
+- Khớp cấu trúc với tham số `horizon_months` của pipeline hiện tại.
+
+---
+
+## 9. Modeling và Monthly Pipeline
+
+Entry point kích hoạt: `python -m pipelines.monthly.monthly_v2_cli`.
+
+Orchestrator chính `src/pipelines/monthly/monthly_v2.py` phối hợp chặt chẽ quy trình qua 8 bước:
+
+```
+Step 1: Dataset Prep       → Tạo DatasetResult (train, eval, predict)
+Step 2: Train XGBoost      → Huấn luyện mô hình XGBoost với sample weights
+Step 3: Evaluate           → Tính F1, F0.5, PR-AUC, ROC-AUC, tối ưu Threshold
+Step 4: Guardrail Check    → Kiểm tra cổng chất lượng tối thiểu
+Step 5: Accept/Reject      → So sánh F0.5 mô hình mới với mô hình được accepted trước đó
+Step 6: Save Bundle        → Đóng gói lưu trữ joblib model + metadata vào disk nếu accept
+Step 7: Score All Active   → Dự đoán churn probability + churn flag kèm lý do
+Step 8: Export Risk Table  → TRUNCATE và ghi đè danh sách rủi ro vào PostgreSQL
+```
+
+### 9.1 Cấu hình tham số XGBoost hiện tại
+
+Mô hình XGBoost sử dụng hàm mục tiêu `binary:logistic` với các siêu tham số mặc định:
+
+| Tham số | Giá trị | Ý nghĩa |
+|---|---:|---|
+| `max_depth` | 6 | Độ sâu tối đa của cây quyết định |
+| `learning_rate` | 0.05 | Tốc độ học |
+| `n_estimators` | 500 | Số lượng cây quyết định tối đa |
+| `early_stopping_rounds` | 30 | Dừng sớm nếu metric đánh giá không cải thiện sau 30 rounds |
+| `subsample` | 0.8 | Tỷ lệ dòng subsample cho mỗi cây |
+| `colsample_bytree` | 0.8 | Tỷ lệ cột subsample cho mỗi cây |
+| `reg_alpha` | 0.1 | L1 regularization term |
+| `reg_lambda` | 1.0 | L2 regularization term |
+| `eval_metric` | `logloss`, `aucpr` | Metric giám sát trong lúc training |
 
 ### 5.6 Trend (Xu hướng)
 
@@ -606,17 +531,25 @@ Hệ thống được thiết kế bắt buộc triển khai qua **KubernetesPod
 
 **1. Build Docker Image**
 ```bash
-docker build -t churn_app:latest -f infrastructure/Dockerfile.app .
+# Build app image chạy ML tasks
+docker build -t churn_app:v2 -f infrastructure/Dockerfile.app .
+
+# Build custom Airflow image tích hợp DAGs
+docker build -t churn_app_airflow:latest -f infrastructure/Dockerfile.airflow .
 ```
 
-**2. Tạo K8s Secrets**
+### 13.2 Tạo Kubernetes Secrets trên Cluster
 ```bash
-kubectl create secret generic churn-db-secret --from-env-file=".env" -n default
-```
-*(Nếu dùng GitSync, tạo thêm secret `airflow-git-ssh-key`).*
+# Khởi tạo DB secret nạp từ file .env local
+kubectl create secret generic churn-db-secret --from-env-file=.env -n default
 
-**3. Cài đặt Airflow bằng Helm**
+# (Tùy chọn) Tạo secret key để Airflow tự động đồng bộ DAGs từ Git qua SSH
+kubectl create secret generic airflow-git-ssh-key --from-file=gitSshKey=<đường-dẫn-đến-private-key> -n default
+```
+
+### 13.3 Deploy Airflow thông qua Helm Chart
 ```bash
+# Thêm và cập nhật repository chính thức của Airflow
 helm repo add apache-airflow https://airflow.apache.org
 helm repo update
 
@@ -627,11 +560,13 @@ helm upgrade --install airflow apache-airflow/airflow \
   -f infrastructure/helm/airflow/values-local.yaml
 ```
 
-**4. Cài đặt Monitoring Stack (Prometheus + Grafana)**
+### 13.4 Triển khai Monitoring Stack (Prometheus & Grafana)
 ```bash
+# Thêm repository monitoring cộng đồng
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo update
 
+# Cài đặt Prometheus stack sang namespace monitoring riêng biệt
 helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
   --namespace monitoring --create-namespace \
   -f infrastructure/helm/monitoring/values.yaml
@@ -782,36 +717,13 @@ DAG `ds_churn_housekeeping` chạy **hàng ngày lúc 03:00** với chính sách
 
 Tùy chỉnh qua environment variables:
 ```bash
-BUNDLE_KEEP_COUNT=10     # Số bundles tối đa giữ lại
-LOG_RETENTION_DAYS=30    # Ngày giữ log
-SAVED_RETENTION_DAYS=90  # Ngày giữ saved data
-FAIL_RETENTION_DAYS=30   # Ngày giữ failed data
-INCOMING_RETENTION_DAYS=7 # Ngày giữ incoming data
-```
-
----
-
-## 10. Testing
-
-| Test suite | Tests | Coverage |
-|------------|-------|----------|
-| `test_config.py` | 9 | PostgresConfig validation |
-| `test_ewma.py` | 10 | Multi-signal EWMA, delta penultimate |
-| `test_pipeline_config.py` | 11 | DatasetPipelineConfig validation |
-| `test_pseudo_labeling.py` | 4 | Pseudo-label assignment |
-| `test_sample_weighting.py` | 6 | PU weights, label smoothing |
-| `test_sanity_checks.py` | 4 | Dataset sanity validation |
-| `test_model_config.py` | 20 | ModelConfig validation + serialization |
-| `test_evaluator.py` | 6 | F1 threshold selection |
-| `test_guardrail.py` | 17 | Quality gates + accept/reject |
-| `test_scorer.py` | 14 | Score stats + reasons generation |
-| **Total** | **105** | |
-
-```bash
-# Chạy tất cả tests
+# Chạy toàn bộ các test cases
 pytest
 
-# Với coverage HTML report
+# Chạy test chi tiết cho cấu hình model
+pytest tests/test_model_config.py -v
+
+# Chạy xuất báo cáo độ bao phủ mã nguồn (Coverage HTML)
 pytest --cov=src --cov-report=html
 
 # Chạy test cụ thể
@@ -888,11 +800,4 @@ interface → application → domain ← infrastructure
 | **Feature Documentation** | [`docs/models/feature_documentation.md`](docs/models/feature_documentation.md) | Chi tiết tính toán từng feature |
 | **Performance Reports** | [`docs/models/performance_reports.md`](docs/models/performance_reports.md) | Kết quả đánh giá model |
 | **ADRs** | [`docs/adr/`](docs/adr/) | Architecture Decision Records |
-| **API Spec** | [`docs/api/api_spec.yaml`](docs/api/api_spec.yaml) | OpenAPI specification |
-| **Coding Conventions** | [`Coding_conventions/00-Index_and_glossary.md`](Coding_conventions/00-Index_and_glossary.md) | Quy ước coding toàn dự án |
 
----
-
-## 13. License
-
-Internal use only — proprietary.
