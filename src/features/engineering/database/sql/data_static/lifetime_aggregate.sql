@@ -16,7 +16,8 @@ WITH customer_agg AS (
         COALESCE(SUM(total_fee)::double precision / NULLIF(SUM(item_count),0), 0) AS lifetime_avg_revenue_per_item,
         COALESCE(SUM(weight_kg)::double precision / NULLIF(SUM(item_count),0), 0) AS lifetime_avg_weight_per_item,
         -- Activity
-        COUNT(report_month) AS lifetime_months_active,
+        (COUNT(DISTINCT date_trunc('month', report_month))
+            FILTER (WHERE item_count > 0))::int AS lifetime_months_active,
         MIN(report_month) AS first_month,
         -- Quality metrics (inline to avoid second scan)
         COALESCE(SUM(delay_count)::double precision / NULLIF(SUM(item_count),0), 0) AS lifetime_pct_delay,
@@ -40,7 +41,8 @@ WITH customer_agg AS (
         SUM(COALESCE(ser_l,0))::bigint AS ser_l,
         SUM(COALESCE(ser_q,0))::bigint AS ser_q
     FROM public.cas_customer
-    WHERE report_month >= DATE '2025-01-01' 
+    WHERE report_month >= DATE '2025-01-01'
+      AND report_month <= CURRENT_DATE
     GROUP BY cms_code_enc
 ),
 
@@ -56,7 +58,7 @@ info AS (
         cus_poscode,
         cus_province
     FROM public.cas_info
-    ORDER BY cms_code_enc DESC
+    ORDER BY cms_code_enc, customer_update_date DESC NULLS LAST
 ),
 
 complaint_agg AS (
@@ -66,6 +68,7 @@ complaint_agg AS (
         MODE() WITHIN GROUP (ORDER BY complaint_code)::int AS most_common_complaint
     FROM public.cms_complaint
     WHERE create_complaint_date >= DATE '2025-01-01'
+      AND create_complaint_date < CURRENT_DATE + INTERVAL '1 day'
     GROUP BY cms_code_enc
 ),
 
@@ -73,13 +76,14 @@ bccp_agg AS (
     SELECT
         cms_code_enc,
         COUNT(DISTINCT DATE(sending_time))::int AS lifetime_days_active,
-        COALESCE(SUM(CASE WHEN total_complaint > 0 THEN 1 ELSE 0 END)::double precision / NULLIF(COUNT(*), 1), 0) AS lifetime_pct_complaint_per_item,
+        COALESCE(SUM(CASE WHEN total_complaint > 0 THEN 1 ELSE 0 END)::double precision / NULLIF(COUNT(*), 0), 0) AS lifetime_pct_complaint_per_item,
         (MODE() WITHIN GROUP (ORDER BY rec_province_code))::bigint AS most_common_rec_province,
         (MODE() WITHIN GROUP (ORDER BY rec_district_code))::bigint AS most_common_rec_district,
         (MODE() WITHIN GROUP (ORDER BY rec_commune_code))::bigint AS most_common_rec_commune,
         (MODE() WITHIN GROUP (ORDER BY region))::varchar AS most_common_region
     FROM {BCCP_SRC}
     WHERE sending_time >= DATE '2025-01-01'
+      AND sending_time < CURRENT_DATE + INTERVAL '1 day'
     GROUP BY cms_code_enc
 )
 
@@ -155,6 +159,7 @@ LEFT JOIN info i ON i.cms_code_enc = ca.cms_code_enc
 LEFT JOIN complaint_agg com ON com.cms_code_enc = ca.cms_code_enc
 LEFT JOIN bccp_agg b ON b.cms_code_enc = ca.cms_code_enc
 ON CONFLICT (cms_code_enc) DO UPDATE SET
+    contract_classify = EXCLUDED.contract_classify,
     contract_service = EXCLUDED.contract_service,
     custype = EXCLUDED.custype,
     contract_sig_first = EXCLUDED.contract_sig_first,

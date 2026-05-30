@@ -1,13 +1,20 @@
-"""
-Database utilities: connection, index creation, table discovery. Handles all database operations except query execution.
-"""
+"""Database utilities: connection, index creation, table discovery, and validation."""
+
+import re
 
 import pandas as pd
 from sqlalchemy import inspect, text
 
+from features.engineering.feature_gen.feature_source_schema import (
+    BCCP_ORDERITEM_CONTRACT,
+    FEATURE_SOURCE_CONTRACTS,
+    collect_schema_errors,
+)
 from shared.logging_config import get_logger
 
 logger = get_logger("db_utils")
+
+BCCP_TABLE_PATTERN = re.compile(r"^bccp_orderitem_\d{4}$")
 
 
 def execute_sql(engine, sql_str: str):
@@ -36,8 +43,16 @@ def build_bccp_src(engine, start_date: str, end_date: str) -> str:
             selects.append(f"SELECT * FROM public.{tbl}")
 
     if not selects:
-        logger.warning(f"No bccp_orderitem tables found for {start_date} to {end_date}, using fallback")
-        return "public.bccp_orderitem"
+        if "bccp_orderitem" in all_tables:
+            logger.warning(
+                "No monthly bccp_orderitem tables found for %s to %s, using base table",
+                start_date,
+                end_date,
+            )
+            return "public.bccp_orderitem"
+        raise RuntimeError(
+            f"No bccp_orderitem source found for {start_date} to {end_date}"
+        )
 
     result = "(" + " UNION ALL ".join(selects) + ") AS bccp"
     logger.debug(f"Built bccp_src with {len(selects)} tables")
@@ -46,11 +61,10 @@ def build_bccp_src(engine, start_date: str, end_date: str) -> str:
 
 def create_bccp_indexes(engine):
     inspector = inspect(engine)
-    bccp_tables = [
-        t
-        for t in inspector.get_table_names(schema="public")
-        if t.startswith("bccp_orderitem_") and len(t) == len("bccp_orderitem_YYMM")
-    ]
+    available = set(inspector.get_table_names(schema="public"))
+    bccp_tables = discover_bccp_tables(available)
+    if "bccp_orderitem" in available:
+        bccp_tables.append("bccp_orderitem")
 
     if not bccp_tables:
         logger.info("No bccp_orderitem tables found, skipping bccp indexes")
@@ -95,7 +109,7 @@ def ensure_public_tables_exist(engine, required_tables=None):
         if tbl == "bccp_orderitem":
             # Accept either a base table or partitioned monthly tables
             has_base = "bccp_orderitem" in available
-            has_partition = any(t.startswith("bccp_orderitem_") for t in available)
+            has_partition = bool(discover_bccp_tables(available))
             if not (has_base or has_partition):
                 missing.append(tbl)
         else:
@@ -108,21 +122,43 @@ def ensure_public_tables_exist(engine, required_tables=None):
         raise RuntimeError(msg)
 
 
-def ensure_public_table_columns_exist(engine, required_columns: dict):
+def discover_bccp_tables(table_names) -> list[str]:
+    """Return strictly named monthly BCCP source tables in stable order."""
+    return sorted(table for table in table_names if BCCP_TABLE_PATTERN.fullmatch(table))
+
+
+def ensure_feature_source_schema(engine) -> None:
+    """Validate columns and type families consumed by feature-generation SQL."""
     inspector = inspect(engine)
     available = set(inspector.get_table_names(schema="public"))
-
     errors = []
-    for table, cols in required_columns.items():
-        if table not in available:
-            errors.append(f"Missing table: {table}")
-            continue
 
-        cols_info = inspector.get_columns(table, schema="public")
-        existing_cols = {c["name"] for c in cols_info}
-        missing_cols = [c for c in cols if c not in existing_cols]
-        if missing_cols:
-            errors.append(f"Table {table} missing columns: {', '.join(missing_cols)}")
+    for table_name, contract in FEATURE_SOURCE_CONTRACTS.items():
+        if table_name not in available:
+            errors.append(f"Missing table: {table_name}")
+            continue
+        errors.extend(
+            collect_schema_errors(
+                table_name,
+                inspector.get_columns(table_name, schema="public"),
+                contract,
+            )
+        )
+
+    bccp_tables = discover_bccp_tables(available)
+    if "bccp_orderitem" in available:
+        bccp_tables.append("bccp_orderitem")
+    if not bccp_tables:
+        errors.append("Missing table: bccp_orderitem or bccp_orderitem_YYMM")
+
+    for table_name in bccp_tables:
+        errors.extend(
+            collect_schema_errors(
+                table_name,
+                inspector.get_columns(table_name, schema="public"),
+                BCCP_ORDERITEM_CONTRACT,
+            )
+        )
 
     if errors:
         msg = "; ".join(errors)

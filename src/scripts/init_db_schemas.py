@@ -107,6 +107,38 @@ def init_schemas() -> None:
         ("CREATE INDEX IF NOT EXISTS idx_prototype_horizon ON cskh.prototype_cache(horizon, run_month DESC)"),
         # ── Schema: data_static ──────────────────────────
         "CREATE SCHEMA IF NOT EXISTS data_static",
+        """CREATE TABLE IF NOT EXISTS data_static.feature_generation_windows (
+            run_id                  VARCHAR(100) NOT NULL,
+            window_table            VARCHAR(255) NOT NULL,
+            window_size             INT NOT NULL,
+            start_yymm              VARCHAR(4) NOT NULL,
+            end_yymm                VARCHAR(4) NOT NULL,
+            status                  VARCHAR(20) NOT NULL,
+            plan_reason             VARCHAR(30) NOT NULL,
+            row_count               BIGINT,
+            distinct_customer_count BIGINT,
+            error_message           TEXT,
+            started_at              TIMESTAMP,
+            finished_at             TIMESTAMP,
+            updated_at              TIMESTAMP NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (run_id, window_table)
+        )""",
+        ("CREATE INDEX IF NOT EXISTS idx_feature_windows_table_status "
+         "ON data_static.feature_generation_windows(window_table, status)"),
+        """CREATE TABLE IF NOT EXISTS data_static.feature_generation_quality (
+            run_id          VARCHAR(100) NOT NULL,
+            window_table    VARCHAR(255) NOT NULL,
+            window_size     INT NOT NULL,
+            start_yymm      VARCHAR(4) NOT NULL,
+            end_yymm        VARCHAR(4) NOT NULL,
+            status          VARCHAR(20) NOT NULL,
+            violations      JSONB NOT NULL,
+            metrics         JSONB NOT NULL,
+            checked_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (run_id, window_table)
+        )""",
+        ("CREATE INDEX IF NOT EXISTS idx_feature_quality_table_status "
+         "ON data_static.feature_generation_quality(window_table, status)"),
         # ── Schema: data_window ──────────────────────────
         "CREATE SCHEMA IF NOT EXISTS data_window",
         # ── Schema: ingest ───────────────────────────────

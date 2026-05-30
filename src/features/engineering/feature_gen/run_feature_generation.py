@@ -2,6 +2,7 @@ import argparse
 import datetime as dt
 import os
 import re
+import uuid
 from pathlib import Path
 
 import pandas as pd
@@ -9,8 +10,15 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
 from config.db_config import PostgresConfig
-from features.engineering.feature_gen.db_utils import ensure_public_table_columns_exist, ensure_public_tables_exist
+from features.engineering.feature_gen.db_utils import (
+    ensure_feature_source_schema,
+    ensure_public_tables_exist,
+)
 from features.engineering.feature_gen.render_and_execute_templates import render_and_run_all, run_static_aggregate
+from features.engineering.feature_gen.window_quality import (
+    ensure_window_quality_table,
+    validate_and_record_lifetime_quality,
+)
 from shared.logging_config import configure_logging, get_logger
 
 # Load environment variables (centralized .env at project root)
@@ -38,6 +46,11 @@ def run(args):
     logger.info("=" * 60)
 
     try:
+        recompute_last_n = getattr(args, "recompute_last_n", 2)
+        if recompute_last_n < 0:
+            raise ValueError("--recompute-last-n must be >= 0")
+        feature_run_id = getattr(args, "feature_run_id", None) or uuid.uuid4().hex
+
         # Get database URL
         database_url = args.database_url or os.environ.get("DATABASE_URL")
         if not database_url:
@@ -53,12 +66,7 @@ def run(args):
         # Validate source tables and columns
         logger.info("Validating source tables...")
         ensure_public_tables_exist(engine)
-        required_columns = {
-            "cas_customer": ["cms_code_enc", "item_count"],
-            "cms_complaint": ["cms_code_enc"],
-            "cas_info": ["cms_code_enc"],
-        }
-        ensure_public_table_columns_exist(engine, required_columns)
+        ensure_feature_source_schema(engine)
         logger.info("Source tables validated")
 
         # Date range setup
@@ -167,10 +175,24 @@ def run(args):
                 if count == 0:
                     logger.error("Static feature table is empty! Check data_static aggregation.")
                     raise ValueError("Static feature table is empty!")
+            ensure_window_quality_table(engine)
+            quality = validate_and_record_lifetime_quality(engine, feature_run_id)
+            logger.info(
+                "Static feature quality validated. Rows=%d, distinct_customers=%d",
+                quality.row_count,
+                quality.distinct_customer_count,
+            )
 
         def run_sliding(engine, months, window_sizes, incremental=False):
             logger.info("Aggregating window features...")
-            render_and_run_all(engine, months, window_sizes, incremental=incremental)
+            render_and_run_all(
+                engine,
+                months,
+                window_sizes,
+                incremental=incremental,
+                recompute_last_n=recompute_last_n,
+                run_id=feature_run_id,
+            )
 
         run_lifetime(engine)
         run_sliding(engine, months, window_sizes, incremental=incremental)
@@ -197,5 +219,16 @@ if __name__ == "__main__":
     parser.add_argument("--database-url", default=None, help="Database URL")
     parser.add_argument("--incremental", action="store_true",
                         help="Skip schema recreation, only compute new windows")
+    parser.add_argument(
+        "--recompute-last-n",
+        type=int,
+        default=2,
+        help="In incremental mode, rebuild the latest N windows per size",
+    )
+    parser.add_argument(
+        "--feature-run-id",
+        default=None,
+        help="Optional feature-window manifest run ID",
+    )
     args = parser.parse_args()
     run(args)

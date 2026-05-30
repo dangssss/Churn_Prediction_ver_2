@@ -27,7 +27,7 @@ TABLE_CONFIG: Dict[str, Dict] = {
     "cas_info": {
         "text_cols": {"cms_code_enc", "crm_code"},
         "mode": "snapshot",  # truncate on every load
-        "datetime_cols": {"contract_service", "contract_sig_first"},
+        "datetime_cols": {"contract_sig_first", "customer_update_date"},
     },
 }
 

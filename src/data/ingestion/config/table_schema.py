@@ -129,7 +129,7 @@ CAS_INFO_COLUMNS: list[tuple[str, str, int]] = [
     ("cms_code_enc", "VARCHAR(20)", 1),
     ("crm_code_enc", "VARCHAR(20)", 2),
     ("cus_province", "INT", 3),
-    ("contract_service", "DATETIME", 4),
+    ("contract_service", "INT", 4),
     ("contract_sig_first", "DATETIME", 5),
     ("tenure", "INT", 6),
     ("custype", "INT", 7),

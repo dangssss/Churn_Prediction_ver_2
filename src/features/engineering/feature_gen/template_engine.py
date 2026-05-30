@@ -2,6 +2,7 @@
 Template loading and rendering engine. Handles SQL template loading, caching, and placeholder replacement.
 """
 
+import re
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parents[1]
@@ -9,6 +10,7 @@ SQL_DIR = BASE / "database" / "sql"
 
 # Cache templates in memory for reuse
 _TEMPLATE_CACHE = {}
+_PLACEHOLDER_PATTERN = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 
 TEMPLATE_PATHS = {
     "lifetime_aggregate": SQL_DIR / "data_static" / "lifetime_aggregate.sql",
@@ -34,6 +36,11 @@ def render_template(name: str, **kwargs) -> str:
     replacements = {"{" + k + "}": str(v) for k, v in kwargs.items()}
     for placeholder, value in replacements.items():
         template = template.replace(placeholder, value)
+    unresolved = sorted(set(_PLACEHOLDER_PATTERN.findall(template)))
+    if unresolved:
+        raise ValueError(
+            f"Template {name} has unresolved placeholders: {', '.join(unresolved)}"
+        )
     return template
 
 

@@ -1,11 +1,28 @@
-import re
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 from sqlalchemy import inspect, text
 
+from features.engineering.feature_gen.db_utils import discover_bccp_tables
 from features.engineering.feature_gen.template_engine import render_template
+from features.engineering.feature_gen.window_manifest import (
+    ensure_window_manifest_table,
+    find_empty_window_tables,
+    find_retry_window_tables,
+    record_window_failed,
+    record_window_started,
+    record_window_succeeded,
+    truncate_window_tables,
+    validate_window_table,
+)
+from features.engineering.feature_gen.window_planner import plan_incremental_windows
+from features.engineering.feature_gen.window_quality import (
+    ensure_window_quality_table,
+    validate_and_record_batch_consistency,
+    validate_and_record_window_quality,
+)
 from shared.logging_config import get_logger
 
 logger = get_logger("window_aggregation")
@@ -145,24 +162,69 @@ def _cleanup_staging_tables(engine):
     logger.info("Staging tables dropped")
 
 
-def _insert_one_window(engine, table_name: str, insert_sql: str, idx: int, total: int):
+def _insert_one_window(
+    engine,
+    spec: dict,
+    insert_sql: str,
+    idx: int,
+    total: int,
+    run_id: str,
+    plan_reason: str,
+):
     """Execute a single window INSERT on its own connection.
 
     Each call gets its own connection from the pool, so multiple calls
     can run in parallel without blocking each other.
     """
+    table_name = spec["table_name"]
     t0 = time.time()
-    with engine.begin() as conn:
-        conn.exec_driver_sql(insert_sql)
-    elapsed = time.time() - t0
-    logger.info(f"  [{idx}/{total}] {table_name} ({elapsed:.1f}s)")
+    record_window_started(engine, run_id, spec, plan_reason)
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(insert_sql)
+        validation = validate_window_table(engine, table_name)
+        quality = validate_and_record_window_quality(engine, run_id, spec)
+        record_window_succeeded(engine, run_id, spec, plan_reason, validation)
+        elapsed = time.time() - t0
+        logger.info(
+            "  [%d/%d] %s (%s, rows=%d, null_rate=%.4f, recency=%s..%s, %.1fs)",
+            idx,
+            total,
+            table_name,
+            plan_reason,
+            validation.row_count,
+            quality.critical_null_rate,
+            quality.summary["recency_min"],
+            quality.summary["recency_max"],
+            elapsed,
+        )
+    except Exception as exc:
+        record_window_failed(engine, run_id, spec, plan_reason, str(exc))
+        raise
 
 
-def render_and_run_all(engine, months, window_sizes, incremental: bool = False):
+def _validate_kept_windows(engine, run_id: str, specs: tuple[dict, ...]) -> None:
+    """Audit skipped incremental windows before the batch is accepted."""
+    for spec in specs:
+        validate_window_table(engine, spec["table_name"])
+        validate_and_record_window_quality(engine, run_id, spec)
+
+
+def render_and_run_all(
+    engine,
+    months,
+    window_sizes,
+    incremental: bool = False,
+    recompute_last_n: int = 2,
+    run_id: str | None = None,
+):
+    run_id = run_id or uuid.uuid4().hex
+    ensure_window_manifest_table(engine)
+    ensure_window_quality_table(engine)
     logger.info(
         f"Starting window feature aggregation "
         f"({len(window_sizes)} sizes × {len(months)} months, "
-        f"incremental={incremental})"
+        f"incremental={incremental}, run_id={run_id})"
     )
 
     default_start = pd.Timestamp("2025-01-01")
@@ -170,10 +232,7 @@ def render_and_run_all(engine, months, window_sizes, incremental: bool = False):
     # ── Discover bccp tables ──
     inspector = inspect(engine)
     all_tables = set(inspector.get_table_names(schema="public"))
-    bccp_tables = sorted(
-        t for t in all_tables
-        if re.match(r"^bccp_orderitem_\d{4}$", t)
-    )
+    bccp_tables = discover_bccp_tables(all_tables)
     logger.debug(f"Found {len(bccp_tables)} bccp_orderitem tables")
 
     # ── Pre-generate all window specs ──
@@ -201,25 +260,74 @@ def render_and_run_all(engine, months, window_sizes, incremental: bool = False):
                 }
             )
 
+    expected_window_specs = list(window_specs)
+    kept_specs: tuple[dict, ...] = ()
+
     # ── GP-5: Incremental — skip existing windows ──
+    plan_reasons = {
+        spec["table_name"]: "full_refresh"
+        for spec in window_specs
+    }
+    summary = {
+        "kept": 0,
+        "new": len(window_specs),
+        "empty": 0,
+        "retry": 0,
+        "recent": 0,
+        "to_compute": len(window_specs),
+    }
+
     if incremental:
         dw_tables = set(inspector.get_table_names(schema="data_window"))
         # Exclude staging table names from the check
         staging_names = {"_stg_monthly", "_stg_complaint", "_stg_bccp"}
         dw_tables -= staging_names
-        original_count = len(window_specs)
-        window_specs = [
-            spec for spec in window_specs
-            if spec["table_name"].split(".")[-1] not in dw_tables
-        ]
-        skipped = original_count - len(window_specs)
-        logger.info(
-            f"Incremental: {original_count} total specs -> "
-            f"{len(window_specs)} new to compute ({skipped} skipped)"
+        expected_tables = {
+            spec["table_name"].split(".")[-1]
+            for spec in window_specs
+        }
+        existing_tables = dw_tables & expected_tables
+        empty_tables = find_empty_window_tables(engine, existing_tables)
+        retry_tables = find_retry_window_tables(engine, existing_tables)
+        plan = plan_incremental_windows(
+            window_specs,
+            existing_tables,
+            empty_tables,
+            retry_tables,
+            recompute_last_n,
         )
+        summary = plan.summary()
+        logger.info(
+            "Incremental plan: kept=%d, new=%d, empty=%d, retry=%d, recent=%d, to_compute=%d",
+            summary["kept"],
+            summary["new"],
+            summary["empty"],
+            summary["retry"],
+            summary["recent"],
+            summary["to_compute"],
+        )
+        recompute_specs = plan.recompute_empty + plan.recompute_retry + plan.recompute_recent
+        truncate_window_tables(
+            engine,
+            {spec["table_name"].split(".")[-1] for spec in recompute_specs},
+        )
+        plan_reasons = {
+            spec["table_name"]: reason
+            for reason, specs in (
+                ("new", plan.compute_new),
+                ("empty", plan.recompute_empty),
+                ("retry", plan.recompute_retry),
+                ("recent", plan.recompute_recent),
+            )
+            for spec in specs
+        }
+        kept_specs = plan.keep
+        window_specs = list(plan.to_compute)
         if not window_specs:
+            _validate_kept_windows(engine, run_id, kept_specs)
+            validate_and_record_batch_consistency(engine, run_id, expected_window_specs)
             logger.info("No new windows to compute. Skipping.")
-            return
+            return summary
 
     logger.info(f"Will compute {len(window_specs)} window specifications")
 
@@ -259,11 +367,12 @@ def render_and_run_all(engine, months, window_sizes, incremental: bool = False):
                 spec["end_ym"],
                 spec["window_size"],
             )
-            all_sql_pairs.append((spec["table_name"], create_sql, insert_sql))
+            all_sql_pairs.append((spec, create_sql, insert_sql))
 
         # ── Create all target tables (sequential — DDL is fast) ──
         with engine.begin() as conn:
-            for table_name, create_sql, _ in all_sql_pairs:
+            for spec, create_sql, _ in all_sql_pairs:
+                table_name = spec["table_name"]
                 try:
                     conn.exec_driver_sql(create_sql)
                 except Exception as e:
@@ -280,9 +389,17 @@ def render_and_run_all(engine, months, window_sizes, incremental: bool = False):
 
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL_WORKERS) as pool:
             futures = {}
-            for idx, (table_name, _, insert_sql) in enumerate(all_sql_pairs, 1):
+            for idx, (spec, _, insert_sql) in enumerate(all_sql_pairs, 1):
+                table_name = spec["table_name"]
                 future = pool.submit(
-                    _insert_one_window, engine, table_name, insert_sql, idx, total
+                    _insert_one_window,
+                    engine,
+                    spec,
+                    insert_sql,
+                    idx,
+                    total,
+                    run_id,
+                    plan_reasons[table_name],
                 )
                 futures[future] = table_name
 
@@ -301,6 +418,21 @@ def render_and_run_all(engine, months, window_sizes, incremental: bool = False):
             f"{total} windows in {elapsed:.1f}s "
             f"({elapsed / max(total, 1):.1f}s/window avg)"
         )
+        _validate_kept_windows(engine, run_id, kept_specs)
+        batch_quality = validate_and_record_batch_consistency(
+            engine,
+            run_id,
+            expected_window_specs,
+        )
+        logger.info(
+            "Batch consistency validated: pairs=%d, cross_window_violations=%d, "
+            "lifetime_violations=%d, missing_lifetime=%d",
+            batch_quality.compared_window_pairs,
+            batch_quality.cross_window_violation_rows,
+            batch_quality.lifetime_violation_rows,
+            batch_quality.missing_lifetime_rows,
+        )
+        return summary
 
     finally:
         # ── Always cleanup staging tables ──

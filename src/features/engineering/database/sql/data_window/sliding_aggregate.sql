@@ -1,7 +1,7 @@
 -- ============================================================================
 -- OPTIMIZED sliding_aggregate.sql
 -- ============================================================================
--- Reads from TEMP staging tables (_stg_monthly, _stg_complaint, _stg_bccp)
+-- Reads from UNLOGGED staging tables (_stg_monthly, _stg_complaint, _stg_bccp)
 -- created ONCE by window_aggregation.py before the batch INSERT loop.
 --
 -- Key optimizations vs original:
@@ -141,7 +141,8 @@ complaint_stats AS (
         COUNT(DISTINCT complaint_code)::int AS complaint_diversity,
         MODE() WITHIN GROUP (ORDER BY complaint_code)::int AS most_common_complaint
     FROM data_window._stg_complaint
-    WHERE create_complaint_date >= DATE '{START_DATE}' AND create_complaint_date <= DATE '{END_DATE}'
+    WHERE create_complaint_date >= DATE '{START_DATE}'
+      AND create_complaint_date < DATE '{END_DATE}' + INTERVAL '1 day'
     GROUP BY cms_code_enc
 ),
 
@@ -151,7 +152,7 @@ bccp_stats AS (
         cms_code_enc,
         COUNT(DISTINCT send_date)::int AS active_days,
         (DATE '{END_DATE}'::date - DATE '{START_DATE}'::date + 1)::int AS window_days,
-        (DATE '{END_DATE}'::date - MAX(send_date))::int AS recency_days
+        (MAX(send_date) - DATE '{START_DATE}'::date + 1)::int AS recency_days
     FROM data_window._stg_bccp
     WHERE send_date >= DATE '{START_DATE}' AND send_date <= DATE '{END_DATE}'
     GROUP BY cms_code_enc
@@ -234,8 +235,9 @@ SELECT
     b.active_months,
     ({WINDOW_SIZE} - b.active_months)::int,
     COALESCE(bs.active_days, 0),
-    (bs.window_days::int - COALESCE(bs.active_days, 0))::int,
-    ((bs.window_days::int - COALESCE(bs.active_days, 0))::double precision / GREATEST(CEIL(bs.window_days::int / 30.0), 1))::double precision,
+    ((DATE '{END_DATE}' - DATE '{START_DATE}' + 1) - COALESCE(bs.active_days, 0))::int,
+    (((DATE '{END_DATE}' - DATE '{START_DATE}' + 1) - COALESCE(bs.active_days, 0))::double precision /
+        GREATEST(CEIL((DATE '{END_DATE}' - DATE '{START_DATE}' + 1) / 30.0), 1))::double precision,
     0::int,
     b.avg_lastday,
 
