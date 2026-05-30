@@ -32,7 +32,10 @@ from data.ingestion.config.csv_schema import (
     SOURCE_HAS_HEADER,
     get_table_config,
 )
-from data.ingestion.config.table_schema import get_prod_table_ddl
+from data.ingestion.config.table_schema import (
+    get_canonical_column_names,
+    get_prod_table_ddl,
+)
 from data.ingestion.ops.data_transformations import (
     CustomerEncryption,
     SafeTypeCaster,
@@ -175,6 +178,15 @@ TRANSFORM_DISPATCH = {
     "cas_info": transform_cas_info_row,
 }
 
+# Natural keys used to collapse duplicate source rows before they land in prod.
+# These are the v1 production keys, kept local to ingestion so modeling logic is unchanged.
+DEDUP_KEYS: dict[str, list[str]] = {
+    "bccp_orderitem": ["item_code"],
+    "cms_complaint": ["cms_code_enc", "item_code", "create_complaint_date", "complaint_code"],
+    "cas_customer": ["cms_code_enc", "report_month"],
+    "cas_info": ["cms_code_enc"],
+}
+
 
 # ---- Public dataclass ---------------------------------------------------
 
@@ -193,6 +205,8 @@ class IngestStats:
     rows_in_csv: int
     validation_passed: bool
     diff_pct: float
+    rows_staged: int = 0
+    rows_deduplicated: int = 0
 
 
 # ---- Public API ---------------------------------------------------------
@@ -280,6 +294,8 @@ def copy_and_insert_to_production(
 
     rows_inserted = 0
     rows_in_csv = 0
+    rows_staged = 0
+    rows_deduplicated = 0
 
     try:
         # 0) Schema prod
@@ -295,33 +311,62 @@ def copy_and_insert_to_production(
         logger.info(f"Truncated {prod_tbl} (mode={mode}, full reload)")
 
         # 3) COPY từng CSV
-        for csv_file in csv_files:
-            file_inserted, file_seen = _copy_one_csv(
+        prod_columns = get_canonical_column_names(base)
+        for idx, csv_file in enumerate(csv_files, start=1):
+            staging_tbl = _quote_ident(f"_stg_{table_name}_{idx}")
+            cur.execute(f"DROP TABLE IF EXISTS {staging_tbl};")
+            cur.execute(f"CREATE TEMP TABLE {staging_tbl} (LIKE {prod_tbl}) ON COMMIT DROP;")
+
+            file_staged, file_seen = _copy_one_csv(
                 cur=cur,
                 csv_file=csv_file,
-                prod_tbl=prod_tbl,
+                prod_tbl=staging_tbl,
                 base=base,
                 headers_raw=headers_raw,
                 header_map=header_map,
                 encrypto=encrypto,
                 batch_rows=batch_rows,
             )
-            rows_inserted += file_inserted
+            rows_staged += file_staged
             rows_in_csv += file_seen
+
+            if file_staged > 0:
+                cur.execute(f"ANALYZE {staging_tbl};")
+                file_inserted, file_deleted = _upsert_staging_to_prod(
+                    cur=cur,
+                    prod_tbl=prod_tbl,
+                    staging_tbl=staging_tbl,
+                    base=base,
+                    columns=prod_columns,
+                )
+                rows_deduplicated += max(file_staged - file_inserted, 0) + file_deleted
+            else:
+                file_inserted = 0
+                file_deleted = 0
+
+            rows_inserted += file_inserted
+            cur.execute(f"DROP TABLE IF EXISTS {staging_tbl};")
             logger.info(
-                f"[{base}] {csv_file.name}: read={file_seen:,}, inserted={file_inserted:,} "
-                f"(running total={rows_inserted:,})"
+                f"[{base}] {csv_file.name}: read={file_seen:,}, staged={file_staged:,}, "
+                f"inserted={file_inserted:,}, deleted_overlap={file_deleted:,} "
+                f"(running final={rows_inserted:,})"
             )
 
         # 4) Tính validation TRƯỚC commit (quyết định có rollback không)
-        diff = abs(rows_in_csv - rows_inserted)
+        diff = abs(rows_in_csv - rows_staged)
         diff_pct = diff / max(rows_in_csv, 1)
         validation_passed = diff_pct <= _VALIDATION_TOLERANCE_PCT
         if not validation_passed:
             logger.warning(
                 f"[{base}] Row count mismatch: csv={rows_in_csv:,} "
-                f"inserted={rows_inserted:,} diff_pct={diff_pct:.4%} "
+                f"staged={rows_staged:,} diff_pct={diff_pct:.4%} "
                 f"(tolerance={_VALIDATION_TOLERANCE_PCT:.4%})"
+            )
+        if rows_deduplicated:
+            logger.info(
+                "[%s] Deduplicated %d row(s) using natural keys before commit",
+                base,
+                rows_deduplicated,
             )
 
         # 5) Save encryption mapping TRƯỚC commit DB (Bug 5 fix).
@@ -342,6 +387,8 @@ def copy_and_insert_to_production(
             rows_in_csv=rows_in_csv,
             validation_passed=validation_passed,
             diff_pct=diff_pct,
+            rows_staged=rows_staged,
+            rows_deduplicated=rows_deduplicated,
         )
 
     except Exception as e:
@@ -421,6 +468,75 @@ def _resolve_headers(
 
     logger.info("Using canonical header order for base=%s (%d columns)", base, len(expected))
     return expected[:], header_map, headers_raw
+
+
+def _quote_ident(identifier: str) -> str:
+    """Quote a generated SQL identifier."""
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _upsert_staging_to_prod(
+    *,
+    cur,
+    prod_tbl: str,
+    staging_tbl: str,
+    base: str,
+    columns: list[str],
+) -> tuple[int, int]:
+    """Move staged rows into prod using v1 natural-key dedup semantics."""
+    col_str = ", ".join([f'"{c}"' for c in columns])
+    dedup_cols = [c for c in DEDUP_KEYS.get(base, []) if c in columns]
+
+    if dedup_cols:
+        key_conditions = " AND ".join([f'p."{col}" = s."{col}"' for col in dedup_cols])
+        key_cols_sql = ", ".join([f'"{col}"' for col in dedup_cols])
+
+        cur.execute(
+            f"""
+            DELETE FROM {prod_tbl} p
+            USING {staging_tbl} s
+            WHERE {key_conditions};
+            """
+        )
+        rows_deleted = cur.rowcount
+
+        cur.execute(
+            f"""
+            INSERT INTO {prod_tbl} ({col_str})
+            SELECT {col_str}
+            FROM (
+                SELECT {col_str},
+                       ROW_NUMBER() OVER (PARTITION BY {key_cols_sql} ORDER BY ctid) AS rn
+                FROM {staging_tbl}
+            ) sub
+            WHERE rn = 1;
+            """
+        )
+        return cur.rowcount, rows_deleted
+
+    all_cols_cond = " AND ".join([f'p."{col}" = s."{col}"' for col in columns])
+    cur.execute(
+        f"""
+        DELETE FROM {prod_tbl} p
+        USING {staging_tbl} s
+        WHERE {all_cols_cond};
+        """
+    )
+    rows_deleted = cur.rowcount
+
+    cur.execute(
+        f"""
+        INSERT INTO {prod_tbl} ({col_str})
+        SELECT {col_str}
+        FROM (
+            SELECT {col_str},
+                   ROW_NUMBER() OVER (PARTITION BY {col_str} ORDER BY ctid) AS rn
+            FROM {staging_tbl}
+        ) sub
+        WHERE rn = 1;
+        """
+    )
+    return cur.rowcount, rows_deleted
 
 
 def _copy_one_csv(

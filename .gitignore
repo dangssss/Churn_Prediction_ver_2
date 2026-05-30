@@ -72,6 +72,8 @@ Thumbs.db
 .claude/projects/
 # Antigravity / other agents
 .antigravity/
+.codex/
+.openai/
 .cursor/
 .windsurf/
 .aider/
@@ -81,6 +83,21 @@ Thumbs.db
 .cline/
 .roo/
 .agents/
+
+# Agent instructions / local assistant notes
+AGENTS.md
+AGENT.md
+CODEX.md
+CLAUDE.md
+.codex.md
+.agent-notes.md
+
+# Local v1 reference dumps copied into the workspace by mistake
+Churn_Prediction_ver_1.zip
+Churn_Prediction_v1.zip
+Churn_Prediction_ver_1/
+v1_extracted_for_comparison/
+v1_reference/
 
 # Documentation & Conventions (ignored per user request)
 Coding_conventions/

@@ -51,6 +51,16 @@ def main() -> int:
         # ── Read pipeline config from env vars ─────────────
         cskh_path = os.environ.get("CSKH_FILE_PATH")
         cskh_dir = os.environ.get("CSKH_DIR")
+        if not cskh_dir:
+            incoming_dir = os.environ.get("INCOMING_DIR")
+            candidates = []
+            if incoming_dir:
+                candidates.append(Path(incoming_dir) / "cskh")
+            candidates.extend([Path("data/incoming/cskh"), Path("/churn_data/incoming/cskh")])
+            for candidate in candidates:
+                if candidate.exists():
+                    cskh_dir = str(candidate)
+                    break
 
         if cskh_dir:
             logger.info("CSKH directory: %s", cskh_dir)
