@@ -20,7 +20,7 @@ images:
 dags:
   gitSync:
     enabled: true
-    repo: "git@github.com:dangssss/Churn_Prediction.git"
+    repo: "git@github.com:dangssss/Churn_Prediction_ver_2.git"
     branch: "master"
     rev: "HEAD"
     depth: 1
