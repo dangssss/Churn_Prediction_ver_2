@@ -27,6 +27,28 @@ class _FakeInspector:
         return self._schemas[table_name]
 
 
+class _FakeBegin:
+    def __init__(self):
+        self.statements = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def execute(self, statement):
+        self.statements.append(str(statement))
+
+
+class _FakeEngine:
+    def __init__(self):
+        self.connection = _FakeBegin()
+
+    def begin(self):
+        return self.connection
+
+
 def test_discover_bccp_tables_accepts_only_strict_yymm_suffixes():
     assert db_utils.discover_bccp_tables(
         {
@@ -58,6 +80,26 @@ def test_build_bccp_src_uses_base_table_as_explicit_fallback(monkeypatch):
         db_utils.build_bccp_src(object(), "2025-01-01", "2025-01-31")
         == "public.bccp_orderitem"
     )
+
+
+def test_create_bccp_indexes_adds_crm_mapping_indexes(monkeypatch):
+    inspector = _FakeInspector(
+        {
+            "bccp_orderitem_2501": [],
+            "cas_customer": [],
+            "cas_info": [],
+            "cms_complaint": [],
+        }
+    )
+    engine = _FakeEngine()
+    monkeypatch.setattr(db_utils, "inspect", lambda _engine: inspector)
+
+    db_utils.create_bccp_indexes(engine)
+
+    sql = "\n".join(engine.connection.statements)
+    assert "idx_bccp_orderitem_2501_crm_cms" in sql
+    assert "ON public.bccp_orderitem_2501(crm_code_enc, cms_code_enc)" in sql
+    assert "idx_cas_info_crm_cms" in sql
 
 
 def test_ensure_feature_source_schema_validates_monthly_bccp_tables(monkeypatch):

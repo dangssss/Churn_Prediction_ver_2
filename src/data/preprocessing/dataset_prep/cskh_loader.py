@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # Regex: legacy Roi_bo_MM_YY and current label_YYMM naming.
 _CSKH_FILENAME_RE = re.compile(r"^Roi_bo_(\d{2})_(\d{2})(?:\.(?:csv|xlsx))?$", re.IGNORECASE)
 _LABEL_FILENAME_RE = re.compile(r"^label_(\d{4})(?:\.csv)?$", re.IGNORECASE)
+_BCCP_TABLE_RE = re.compile(r"^bccp_orderitem_(\d{4})$")
 
 _ID_COLUMN_CANDIDATES = (
     "cms_code_enc",
@@ -58,6 +59,76 @@ _RAW_LABEL_COLUMNS = (
     "tinh_trang_kh",
     "thang_ks",
 )
+
+
+def _discover_bccp_mapping_tables(engine: Engine, label_to_yymm: int) -> list[tuple[str, int]]:
+    """Return strictly named BCCP partitions available up to the label cutoff."""
+    tables = inspect(engine).get_table_names(schema="public")
+    matches = []
+    for table in tables:
+        match = _BCCP_TABLE_RE.fullmatch(table)
+        if match and int(match.group(1)) <= label_to_yymm:
+            matches.append((table, int(match.group(1))))
+    return sorted(matches, key=lambda item: item[1])
+
+
+def _build_crm_resolution_ctes(bccp_tables: list[tuple[str, int]]) -> str:
+    """Build point-in-time CRM-to-CMS resolution CTEs for CSKH labels."""
+    if bccp_tables:
+        bccp_selects = "\nUNION\n".join(
+            f"""
+            SELECT DISTINCT
+                rc.label_yymm,
+                rc.crm_code_enc,
+                NULLIF(b.cms_code_enc, '') AS cms_code_enc
+            FROM raw_crm rc
+            JOIN public.{table} b
+                ON b.crm_code_enc = rc.crm_code_enc
+            WHERE rc.label_yymm >= {table_yymm}
+              AND NULLIF(b.cms_code_enc, '') IS NOT NULL
+            """
+            for table, table_yymm in bccp_tables
+        )
+    else:
+        bccp_selects = """
+            SELECT
+                NULL::INT AS label_yymm,
+                NULL::TEXT AS crm_code_enc,
+                NULL::TEXT AS cms_code_enc
+            WHERE FALSE
+        """
+
+    return f"""
+        raw_crm AS (
+            SELECT DISTINCT
+                label_yymm,
+                NULLIF(TRIM(crm_code_enc), '') AS crm_code_enc
+            FROM {CSKH_SCHEMA}.{CSKH_RAW_LABEL_TABLE}
+            WHERE NULLIF(TRIM(cms_code_enc), '') IS NULL
+              AND NULLIF(TRIM(crm_code_enc), '') IS NOT NULL
+              AND label_yymm BETWEEN :label_from_yymm AND :label_to_yymm
+        ),
+        bccp_crm_pairs AS (
+            {bccp_selects}
+        ),
+        cas_info_pairs AS (
+            SELECT DISTINCT
+                rc.label_yymm,
+                rc.crm_code_enc,
+                NULLIF(ci.cms_code_enc, '') AS cms_code_enc
+            FROM raw_crm rc
+            JOIN public.cas_info ci
+                ON ci.crm_code_enc = rc.crm_code_enc
+            WHERE NULLIF(ci.cms_code_enc, '') IS NOT NULL
+        ),
+        raw_crm_resolved AS (
+            SELECT label_yymm, crm_code_enc, cms_code_enc, 'bccp_history' AS resolve_source
+            FROM bccp_crm_pairs
+            UNION
+            SELECT label_yymm, crm_code_enc, cms_code_enc, 'cas_info' AS resolve_source
+            FROM cas_info_pairs
+        )
+    """
 
 
 def shift_yymm(yymm: int, months: int) -> int:
@@ -636,6 +707,8 @@ def load_eval_id_cohorts_from_db(
 
     label_from_yymm = shift_yymm(label_to_yymm, -(months_back - 1))
     ensure_cskh_schema(engine)
+    bccp_tables = _discover_bccp_mapping_tables(engine, label_to_yymm)
+    crm_resolution_ctes = _build_crm_resolution_ctes(bccp_tables)
 
     sql = text(f"""
         WITH raw_direct AS (
@@ -646,26 +719,7 @@ def load_eval_id_cohorts_from_db(
             WHERE NULLIF(TRIM(cms_code_enc), '') IS NOT NULL
               AND label_yymm BETWEEN :label_from_yymm AND :label_to_yymm
         ),
-        raw_crm_matches AS (
-            SELECT
-                cl.label_yymm,
-                NULLIF(TRIM(cl.crm_code_enc), '') AS crm_code_enc,
-                MIN(NULLIF(TRIM(ci.cms_code_enc), '')) AS cms_code_enc,
-                COUNT(DISTINCT NULLIF(TRIM(ci.cms_code_enc), '')) AS n_cms
-            FROM {CSKH_SCHEMA}.{CSKH_RAW_LABEL_TABLE} cl
-            JOIN public.cas_info ci
-                ON NULLIF(TRIM(ci.crm_code_enc), '') = NULLIF(TRIM(cl.crm_code_enc), '')
-            WHERE NULLIF(TRIM(cl.cms_code_enc), '') IS NULL
-              AND NULLIF(TRIM(cl.crm_code_enc), '') IS NOT NULL
-              AND NULLIF(TRIM(ci.cms_code_enc), '') IS NOT NULL
-              AND cl.label_yymm BETWEEN :label_from_yymm AND :label_to_yymm
-            GROUP BY cl.label_yymm, NULLIF(TRIM(cl.crm_code_enc), '')
-        ),
-        raw_crm_resolved AS (
-            SELECT label_yymm, cms_code_enc
-            FROM raw_crm_matches
-            WHERE n_cms = 1
-        ),
+        {crm_resolution_ctes},
         confirmed_direct AS (
             SELECT DISTINCT
                 label_yymm,
@@ -687,27 +741,30 @@ def load_eval_id_cohorts_from_db(
     """)
 
     stats_sql = text(f"""
-        WITH raw_crm AS (
-            SELECT DISTINCT NULLIF(TRIM(crm_code_enc), '') AS crm_code_enc
-            FROM {CSKH_SCHEMA}.{CSKH_RAW_LABEL_TABLE}
-            WHERE NULLIF(TRIM(cms_code_enc), '') IS NULL
-              AND NULLIF(TRIM(crm_code_enc), '') IS NOT NULL
-              AND label_yymm BETWEEN :label_from_yymm AND :label_to_yymm
-        ),
+        WITH {crm_resolution_ctes},
         crm_matches AS (
             SELECT
+                rc.label_yymm,
                 rc.crm_code_enc,
-                COUNT(DISTINCT NULLIF(TRIM(ci.cms_code_enc), '')) AS n_cms
+                COUNT(DISTINCT rr.cms_code_enc) AS n_cms,
+                COUNT(DISTINCT rr.cms_code_enc)
+                    FILTER (WHERE rr.resolve_source = 'bccp_history') AS n_bccp_cms,
+                COUNT(DISTINCT rr.cms_code_enc)
+                    FILTER (WHERE rr.resolve_source = 'cas_info') AS n_cas_info_cms
             FROM raw_crm rc
-            LEFT JOIN public.cas_info ci
-                ON NULLIF(TRIM(ci.crm_code_enc), '') = rc.crm_code_enc
-            GROUP BY rc.crm_code_enc
+            LEFT JOIN raw_crm_resolved rr
+                ON rr.label_yymm = rc.label_yymm
+               AND rr.crm_code_enc = rc.crm_code_enc
+            GROUP BY rc.label_yymm, rc.crm_code_enc
         )
         SELECT
             COUNT(*) AS raw_crm_keys,
-            COUNT(*) FILTER (WHERE n_cms = 1) AS resolved_crm_keys,
+            COUNT(*) FILTER (WHERE n_cms > 0) AS resolved_crm_keys,
             COUNT(*) FILTER (WHERE n_cms = 0) AS unresolved_crm_keys,
-            COUNT(*) FILTER (WHERE n_cms > 1) AS ambiguous_crm_keys
+            COUNT(*) FILTER (WHERE n_cms > 1) AS multi_cms_crm_keys,
+            COUNT(*) FILTER (WHERE n_bccp_cms > 0) AS bccp_resolved_crm_keys,
+            COUNT(*) FILTER (WHERE n_cas_info_cms > 0) AS cas_info_resolved_crm_keys,
+            COALESCE(SUM(n_cms), 0) AS resolved_cms_ids
         FROM crm_matches
     """)
 
@@ -735,11 +792,18 @@ def load_eval_id_cohorts_from_db(
     if not stats_df.empty:
         stats = stats_df.iloc[0].to_dict()
         logger.info(
-            "CSKH CRM resolve: %d raw CRM keys, %d resolved, %d unresolved, %d ambiguous",
+            (
+                "CSKH CRM resolve: %d raw CRM keys, %d resolved, %d unresolved, "
+                "%d multi-CMS, %d via BCCP history, %d via cas_info, "
+                "%d CMS candidates"
+            ),
             int(stats.get("raw_crm_keys") or 0),
             int(stats.get("resolved_crm_keys") or 0),
             int(stats.get("unresolved_crm_keys") or 0),
-            int(stats.get("ambiguous_crm_keys") or 0),
+            int(stats.get("multi_cms_crm_keys") or 0),
+            int(stats.get("bccp_resolved_crm_keys") or 0),
+            int(stats.get("cas_info_resolved_crm_keys") or 0),
+            int(stats.get("resolved_cms_ids") or 0),
         )
 
     logger.info(

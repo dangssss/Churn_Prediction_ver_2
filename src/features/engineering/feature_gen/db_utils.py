@@ -1,4 +1,6 @@
 """Database utilities: connection, index creation, table discovery, and validation."""
+# SQL identifiers in this module are generated from strict internal table-name patterns.
+# ruff: noqa: S608
 
 import re
 
@@ -75,11 +77,18 @@ def create_bccp_indexes(engine):
     with engine.begin() as conn:
         for table in sorted(bccp_tables):
             idx_name = f"idx_{table}_code_time"
+            crm_map_idx_name = f"idx_{table}_crm_cms"
             try:
                 conn.execute(
                     text(f"""
                     CREATE INDEX IF NOT EXISTS {idx_name}
                     ON public.{table}(cms_code_enc, sending_time)
+                """)
+                )
+                conn.execute(
+                    text(f"""
+                    CREATE INDEX IF NOT EXISTS {crm_map_idx_name}
+                    ON public.{table}(crm_code_enc, cms_code_enc)
                 """)
                 )
             except Exception as e:
@@ -88,6 +97,12 @@ def create_bccp_indexes(engine):
         # Analyze for query planner optimization
         try:
             logger.debug("Running ANALYZE on source tables...")
+            conn.execute(
+                text("""
+                CREATE INDEX IF NOT EXISTS idx_cas_info_crm_cms
+                ON public.cas_info(crm_code_enc, cms_code_enc)
+            """)
+            )
             conn.execute(text("ANALYZE public.cas_customer"))
             conn.execute(text("ANALYZE public.cas_info"))
             conn.execute(text("ANALYZE public.cms_complaint"))

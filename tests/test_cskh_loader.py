@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from data.preprocessing.dataset_prep.cskh_loader import (
+    _build_crm_resolution_ctes,
     _extract_confirmed_ids,
     _normalize_source_column,
     _prepare_raw_label_rows,
@@ -133,6 +134,31 @@ def test_shift_yymm_handles_year_boundary() -> None:
     assert shift_yymm(2512, 1) == 2601
 
 
+def test_build_crm_resolution_ctes_keeps_all_multi_cms_and_uses_point_in_time_bccp() -> None:
+    sql = _build_crm_resolution_ctes(
+        [
+            ("bccp_orderitem_2501", 2501),
+            ("bccp_orderitem_2502", 2502),
+        ]
+    )
+
+    assert "public.bccp_orderitem_2501" in sql
+    assert "public.bccp_orderitem_2502" in sql
+    assert "rc.label_yymm >= 2502" in sql
+    assert "MIN(" not in sql
+    assert "n_cms = 1" not in sql
+    assert "NOT EXISTS" not in sql
+    assert "'cas_info' AS resolve_source" in sql
+
+
+def test_build_crm_resolution_ctes_falls_back_to_cas_info_without_bccp() -> None:
+    sql = _build_crm_resolution_ctes([])
+
+    assert "WHERE FALSE" in sql
+    assert "JOIN public.cas_info ci" in sql
+    assert "'cas_info' AS resolve_source" in sql
+
+
 def test_load_eval_ids_from_db_binds_historical_label_range(monkeypatch) -> None:
     class FakeConnection:
         def __enter__(self):
@@ -161,13 +187,20 @@ def test_load_eval_ids_from_db_binds_historical_label_range(monkeypatch) -> None
                 "raw_crm_keys": [1],
                 "resolved_crm_keys": [1],
                 "unresolved_crm_keys": [0],
-                "ambiguous_crm_keys": [0],
+                "multi_cms_crm_keys": [0],
+                "bccp_resolved_crm_keys": [1],
+                "cas_info_resolved_crm_keys": [0],
+                "resolved_cms_ids": [1],
             }
         )
 
     monkeypatch.setattr(
         "data.preprocessing.dataset_prep.cskh_loader.ensure_cskh_schema",
         lambda engine: None,
+    )
+    monkeypatch.setattr(
+        "data.preprocessing.dataset_prep.cskh_loader._discover_bccp_mapping_tables",
+        lambda engine, label_to_yymm: [("bccp_orderitem_2501", 2501)],
     )
     monkeypatch.setattr("data.preprocessing.dataset_prep.cskh_loader.pd.read_sql", fake_read_sql)
 

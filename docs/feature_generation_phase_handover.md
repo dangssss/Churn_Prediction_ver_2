@@ -289,12 +289,28 @@ is run with a fixed snapshot, split, seed, and config.
     `etl_date TIMESTAMP` column
   - `bccp_orderitem.total_fee` now uses `BIGINT`; source values above the
     PostgreSQL `INTEGER` range blocked five historical monthly ZIPs
-- CRM fallback resolution is deterministic:
-  - 1,609 CRM-only keys were inspected after `public.cas_info` ingestion
-  - 767 keys map to exactly one CMS ID
-  - 839 keys remain unresolved
-  - 3 ambiguous CRM keys map to multiple CMS IDs and are intentionally
-    excluded from PU labels
+- CRM resolution is deterministic and preserves multi-CMS customers:
+  - direct `cms_code_enc` labels remain the first-class CSKH labels
+  - CRM-only labels resolve against monthly `public.bccp_orderitem_YYMM`
+    partitions up to their own `label_yymm`, then union all matching
+    `public.cas_info` relationships
+  - `public.cas_customer` is not a CRM-to-CMS mapping source because its schema
+    does not contain `crm_code_enc`
+  - one CRM may resolve to multiple CMS IDs; all CMS IDs are retained for PU
+    prototype selection instead of excluding the CRM as ambiguous
+  - local integration check over `label_2501` through `label_2512`:
+    - 2,475 CRM-only monthly keys inspected
+    - 1,152 CRM keys resolved into 1,156 CMS candidates
+    - 1,323 CRM keys remain unresolved because neither BCCP history nor
+      `cas_info` contains a relationship
+    - 4 CRM keys map to multiple CMS IDs and are retained
+  - `label_2507` integration check:
+    - 515 CRM-only keys inspected
+    - 248 CRM keys resolved into 249 CMS candidates
+    - 267 CRM keys remain unresolved
+  - feature-generation indexing now creates
+    `(crm_code_enc, cms_code_enc)` indexes on BCCP monthly partitions and
+    `public.cas_info` so repeated label resolution does not scan raw orders
 - CSKH label selection is time-scoped to prevent temporal leakage:
   - `load_eval_id_cohorts_from_db` requires an inclusive `label_to_yymm`
     cutoff and preserves the source `label_yymm` for each resolved CMS ID
