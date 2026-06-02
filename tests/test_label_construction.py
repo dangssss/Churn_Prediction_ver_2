@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
+from sqlalchemy.sql.elements import TextClause
 
 from data.preprocessing.dataset_prep.label_construction import (
     build_label,
@@ -27,7 +28,7 @@ def test_load_window_features_merges_matching_lifetime_snapshot(monkeypatch) -> 
     calls = []
 
     def fake_read_sql(sql, conn, params=None):
-        calls.append((str(sql), params))
+        calls.append((sql, params))
         if len(calls) == 1:
             return pd.DataFrame({"cms_code_enc": ["CMS001"], "item_sum": [5]})
         return pd.DataFrame(
@@ -46,6 +47,7 @@ def test_load_window_features_merges_matching_lifetime_snapshot(monkeypatch) -> 
     result = load_window_features(FakeEngine(), 3, pd.Timestamp("2025-03-01"))
 
     assert result["lifetime_total_items"].tolist() == [12]
+    assert isinstance(calls[1][0], TextClause)
     assert calls[1][1] == {"snapshot_month": pd.Timestamp("2025-03-01")}
 
 

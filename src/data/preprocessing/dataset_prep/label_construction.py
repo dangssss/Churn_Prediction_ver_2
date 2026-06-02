@@ -80,11 +80,11 @@ def load_window_features(
         with engine.connect() as conn:
             df = pd.read_sql(f"SELECT * FROM {table_name}", conn)  # noqa: S608
             lifetime_df = pd.read_sql(
-                """
+                text("""
                 SELECT *
                 FROM data_static.cus_lifetime_snapshot
                 WHERE snapshot_month = :snapshot_month
-                """,
+                """),
                 conn,
                 params={"snapshot_month": end_month.to_period("M").to_timestamp()},
             )
