@@ -308,6 +308,10 @@ def copy_and_insert_to_production(
         # 2) TRUNCATE cho cả snapshot lẫn monthly (Kịch bản A: full snapshot
         #    per-month — ZIP mới luôn chứa toàn bộ CSV của tháng đó).
         cur.execute(f"TRUNCATE TABLE {prod_tbl};")
+        if base == "bccp_orderitem":
+            cur.execute(
+                f'ALTER TABLE {prod_tbl} ALTER COLUMN "total_fee" TYPE BIGINT;'
+            )
         logger.info(f"Truncated {prod_tbl} (mode={mode}, full reload)")
 
         # 3) COPY từng CSV

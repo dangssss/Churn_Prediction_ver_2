@@ -23,7 +23,7 @@
 - **Cách xử lý:** `# TODO(author): Thu thập data gần nhất, chạy Retraining Pipeline thủ công, verify trước khi đẩy model lên Production.`
 
 ## 3. Kubernetes Deployment & Airflow Helm
-### Lỗi: `invalid mode: /churn_data` khi mount volume trên Docker Desktop Windows
+### Lỗi: `invalid mode: /data` khi mount volume trên Docker Desktop Windows
 - **Dấu hiệu:** Kubernetes Pod Operator báo lỗi tạo Container. Nguyên nhân do mount data bằng `host_path` có chứa `D:\...`. Docker cắt lấy chuỗi `:` làm parameter mode nên báo lỗi.
 - **Cách xử lý:** Không dùng format ổ Windows. Đổi `host_path` sang chuẩn mount ngầm của Docker Desktop Virtual Machine: `/run/desktop/mnt/host/d/Churn_Prediction_Product/...`
 
@@ -61,3 +61,30 @@
     ```promql
     sum(irate(container_cpu_usage_seconds_total{namespace="default"}[5m])) by (pod)
     ```
+
+## 5. Local Feature Generation and EDA
+
+### PostgreSQL temp spill fills drive C
+
+- **Signal:** Feature generation slows down or fails while PostgreSQL temporary
+  files consume free space on drive `C:`.
+- **Cause:** Large window aggregations can spill to the database default
+  temporary tablespace.
+- **Resolution:** For the reviewed local database only, create a PostgreSQL
+  tablespace on drive `B:` and set `temp_tablespaces` for the
+  `churn_prediction` database. Verify new sessions with:
+  `SHOW temp_tablespaces`.
+
+### EDA pod consumes most Docker Desktop memory
+
+- **Signal:** Kubernetes API requests time out while EDA loads temporal
+  snapshots; PostgreSQL shows a long-running `SELECT * FROM
+  data_window.cus_feature_*`.
+- **Cause:** Loading complete monthly snapshots into pandas at once exceeds
+  the local Docker Desktop memory budget.
+- **Resolution:** Keep temporal loading bounded with:
+  - `EDA_TEMPORAL_SAMPLE_ROWS`
+  - `EDA_TEMPORAL_SAMPLE_PERCENT`
+
+  The loader uses repeatable PostgreSQL block sampling so comparisons remain
+  reproducible while memory stays bounded.

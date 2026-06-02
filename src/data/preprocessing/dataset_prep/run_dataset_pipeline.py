@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import logging
 import pickle
+from collections.abc import Sequence
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -29,11 +31,21 @@ from data.preprocessing.dataset_prep.activity_tiering import (
     compute_recency,
     detect_t_obs,
 )
+from data.preprocessing.dataset_prep.confirmed_samples import (
+    build_confirmed_holdout_rows,
+    build_confirmed_training_rows,
+    split_confirmed_cohorts,
+)
 from data.preprocessing.dataset_prep.cskh_loader import (
-    load_eval_ids_from_db,
+    load_eval_id_cohorts_from_db,
+    parse_cskh_filename,
     scan_and_load_cskh_dir,
 )
 from data.preprocessing.dataset_prep.ewma import compute_ewma
+from data.preprocessing.dataset_prep.label_calibration import (
+    calibrate_label_weights,
+    calibrate_pseudo_label_thresholds,
+)
 from data.preprocessing.dataset_prep.label_construction import (
     build_training_windows,
     load_window_features,
@@ -76,6 +88,8 @@ def run_dataset_pipeline(
     engine: Any,
     config: DatasetPipelineConfig,
     output_dir: Path | None = None,
+    *,
+    feature_names: Sequence[str] | None = None,
 ) -> DatasetResult:
     """Run the full dataset preparation pipeline.
 
@@ -99,12 +113,33 @@ def run_dataset_pipeline(
         as metadata column ``_fallback_mode``.
     """
     config.validate()
+    selected_features = list(
+        NUMERIC_FEATURES if feature_names is None else feature_names
+    )
+    if not selected_features:
+        raise ValueError("feature_names must not be empty")
+    if len(selected_features) != len(set(selected_features)):
+        raise ValueError("feature_names must not contain duplicates")
     logger.info("Pipeline config: %s", config.to_safe_dict())
 
     # ── Step 1: Scope filter + CSKH loading ───────────────
     logger.info("═" * 60)
     logger.info("STEP 1: Scope filter + CSKH loading")
-    working_df = load_working_set(engine, config.min_lifetime_orders)
+    data_start = pd.Timestamp(config.data_start)
+    t_obs = detect_t_obs(
+        engine,
+        data_start,
+        pd.Timestamp(config.t_obs_override) if config.t_obs_override else None,
+    )
+    label_to_yymm = _compute_run_month(t_obs)
+    feature_cutoff_month = t_obs - pd.DateOffset(months=1)
+    working_df = load_working_set(
+        engine,
+        config.min_lifetime_orders,
+        config.min_lifetime_gmv,
+        config.min_account_age_months,
+        feature_cutoff_month,
+    )
     working_ids = set(working_df["cms_code_enc"].astype(str))
 
     # 1a. Scan and load any new CSKH CSV files → DB
@@ -115,14 +150,35 @@ def run_dataset_pipeline(
             logger.info("  %s → %d rows", fname, n_rows)
 
     # 1b. Load eval_ids: try file first, then DB
-    eval_ids = load_eval_ids(config.cskh_file_path, working_ids)
-    if not eval_ids:
+    eval_ids = load_eval_ids(
+        config.cskh_file_path,
+        working_ids,
+        label_to_yymm=label_to_yymm,
+    )
+    eval_id_cohorts: dict[int, set[str]] = {}
+    if eval_ids:
+        parsed = parse_cskh_filename(Path(config.cskh_file_path).name)
+        if parsed is None:
+            raise ValueError(f"Cannot determine label month from {config.cskh_file_path}")
+        month, year = parsed
+        eval_id_cohorts[year * 100 + month] = eval_ids
+    else:
         logger.info("No eval_ids from file — trying DB (cskh.confirmed_churners)")
-        eval_ids = load_eval_ids_from_db(engine, working_ids)
+        eval_id_cohorts = load_eval_id_cohorts_from_db(
+            engine,
+            working_ids,
+            label_to_yymm=label_to_yymm,
+            months_back=config.label_months_back,
+        )
+        eval_ids = set().union(*eval_id_cohorts.values()) if eval_id_cohorts else set()
 
-    has_cskh = len(eval_ids) > 0
+    confirmed_ids = set().union(*eval_id_cohorts.values()) if eval_id_cohorts else set()
+    confirmed_split = split_confirmed_cohorts(eval_id_cohorts)
+    eval_ids = confirmed_split.holdout_ids
+    has_cskh = len(confirmed_ids) > 0
     logger.info(
-        "CSKH result: %d confirmed IDs loaded (has_cskh=%s)",
+        "CSKH result: %d confirmed IDs loaded, %d latest holdout IDs (has_cskh=%s)",
+        len(confirmed_ids),
         len(eval_ids),
         has_cskh,
     )
@@ -130,38 +186,8 @@ def run_dataset_pipeline(
     # ── Step 2: Activity tiering ──────────────────────────
     logger.info("═" * 60)
     logger.info("STEP 2: Activity tiering")
-    data_start = pd.Timestamp(config.data_start)
-    t_obs = detect_t_obs(
-        engine,
-        data_start,
-        pd.Timestamp(config.t_obs_override) if config.t_obs_override else None,
-    )
     working_df = compute_recency(engine, working_df, t_obs, data_start)
     working_df = assign_tiers(working_df, config.recency_active, config.recency_at_risk)
-
-    # Compute PU weight
-    n_confirmed = len(eval_ids)
-    tier_counts = working_df["tier"].value_counts()
-    n_active = tier_counts.get("active", 0)
-
-    if n_confirmed > 0:
-        n_unlabeled = max(n_active - n_confirmed, 1)
-        pu_weight_c = n_confirmed / n_unlabeled
-        pu_weight_c = max(pu_weight_c, config.pu_weight_min)
-    else:
-        # Fallback: dùng giá trị ước lượng khi không có CSKH
-        pu_weight_c = config.fallback_pu_weight
-        logger.warning(
-            "No confirmed churners — using fallback PU weight: %.4f",
-            pu_weight_c,
-        )
-
-    logger.info(
-        "PU_WEIGHT_C = %.4f (n_confirmed=%d, n_active=%d)",
-        pu_weight_c,
-        n_confirmed,
-        n_active,
-    )
 
     # ── Step 3: Load predict window + EWMA ────────────────
     logger.info("═" * 60)
@@ -200,6 +226,26 @@ def run_dataset_pipeline(
     training_history_df = build_training_windows(
         engine, w_star, all_months, config.horizon_months, config.alpha_ewma, config.min_train_windows
     )
+    confirmed_training_df = build_confirmed_training_rows(
+        engine,
+        confirmed_split.training_cohorts,
+        w_star,
+        config.alpha_ewma,
+        lead_offset=config.horizon_months,
+    )
+    if not confirmed_training_df.empty:
+        training_history_df = pd.concat(
+            [training_history_df, confirmed_training_df],
+            ignore_index=True,
+        )
+    holdout_df = build_confirmed_holdout_rows(
+        engine,
+        confirmed_split.holdout_yymm,
+        confirmed_split.holdout_ids,
+        w_star,
+        config.alpha_ewma,
+        lead_offset=config.horizon_months,
+    )
 
     # ── Step 5: Leading prototype (with fallback) ─────────
     logger.info("═" * 60)
@@ -211,11 +257,11 @@ def run_dataset_pipeline(
     # 5a. Try to build new prototype from CSKH data
     prototype = build_leading_prototype(
         engine,
-        eval_ids,
-        t_obs,
+        eval_id_cohorts,
         w_star,
         config.alpha_ewma,
         config.sigma_reg,
+        lead_offset=config.horizon_months,
         min_prototype_samples=config.min_prototype_samples,
     )
 
@@ -273,13 +319,20 @@ def run_dataset_pipeline(
     active_df = active_df[active_df["tier"] == "active"].copy()
     logger.info("Active accounts to score: %d", len(active_df))
 
+    sim_scores, pseudo_thresholds = calibrate_pseudo_label_thresholds(
+        active_df,
+        prototype,
+        similarity_quantile=config.similarity_quantile,
+        reliable_neg_recency_quantile=config.reliable_neg_recency_quantile,
+        trend_down_quantile=config.trend_down_quantile,
+    )
+    logger.info("Pseudo-label thresholds calibrated: %s", pseudo_thresholds)
     active_df = assign_pseudo_labels(
         active_df,
         prototype,
         eval_ids,
-        config.sim_threshold,
-        config.recency_reliable_neg,
-        trend_down_ratio=config.trend_down_ratio,
+        pseudo_thresholds,
+        sim_scores=sim_scores,
     )
 
     # Tag fallback mode in data for downstream awareness
@@ -288,14 +341,35 @@ def run_dataset_pipeline(
     # ── Step 7: Sample weighting → final dataset ──────────
     logger.info("═" * 60)
     logger.info("STEP 7: Sample weighting + final dataset")
+    history_sources = training_history_df.get("label_source", pd.Series(dtype=str))
+    n_rule_based = int((history_sources == "rule_based").sum())
+    label_weights = calibrate_label_weights(
+        active_df["label_source"],
+        n_confirmed_training=len(confirmed_training_df),
+        n_rule_based=n_rule_based,
+        min_aux_weight=config.min_aux_weight,
+        max_aux_weight=config.max_aux_weight,
+    )
+    logger.info("Label weights calibrated: %s", label_weights)
     active_df = apply_weights_and_smoothing(
         active_df,
-        pu_weight_c,
+        label_weights,
         config.label_smooth_eps_confirmed,
         config.label_smooth_eps_pseudo,
     )
 
-    result = build_final_dataset(active_df, training_history_df, eval_ids, NUMERIC_FEATURES)
+    result = build_final_dataset(
+        active_df,
+        training_history_df,
+        holdout_df,
+        eval_ids,
+        selected_features,
+        label_weights,
+        calibration={
+            **asdict(pseudo_thresholds),
+            **{f"{name}_weight": value for name, value in asdict(label_weights).items()},
+        },
+    )
 
     # ── Sanity checks ─────────────────────────────────────
     logger.info("═" * 60)
@@ -355,6 +429,7 @@ def save_pipeline_artifacts(
         "prototype": prototype,
         "T_obs": t_obs,
         "feature_names": result.feature_names,
+        "calibration": result.calibration,
         "config": config.to_safe_dict(),
     }
 

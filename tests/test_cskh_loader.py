@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from data.preprocessing.dataset_prep.cskh_loader import (
     _extract_confirmed_ids,
     _normalize_source_column,
     _prepare_raw_label_rows,
+    load_eval_id_cohorts_from_db,
+    load_eval_ids_from_db,
     parse_cskh_filename,
+    shift_yymm,
 )
 
 
@@ -122,3 +126,65 @@ def test_prepare_raw_label_rows_rejects_non_encoded_keys() -> None:
         assert "encoded customer id column" in str(exc)
     else:
         raise AssertionError("Expected non-encoded label key to be rejected")
+
+
+def test_shift_yymm_handles_year_boundary() -> None:
+    assert shift_yymm(2501, -1) == 2412
+    assert shift_yymm(2512, 1) == 2601
+
+
+def test_load_eval_ids_from_db_binds_historical_label_range(monkeypatch) -> None:
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+    calls = []
+
+    def fake_read_sql(sql, conn, params):
+        calls.append((str(sql), params))
+        if len(calls) == 1:
+            return pd.DataFrame(
+                {
+                    "label_yymm": [2502, 2503],
+                    "cms_code_enc": ["CMS001", "CMS999"],
+                }
+            )
+        return pd.DataFrame(
+            {
+                "raw_crm_keys": [1],
+                "resolved_crm_keys": [1],
+                "unresolved_crm_keys": [0],
+                "ambiguous_crm_keys": [0],
+            }
+        )
+
+    monkeypatch.setattr(
+        "data.preprocessing.dataset_prep.cskh_loader.ensure_cskh_schema",
+        lambda engine: None,
+    )
+    monkeypatch.setattr("data.preprocessing.dataset_prep.cskh_loader.pd.read_sql", fake_read_sql)
+
+    result = load_eval_id_cohorts_from_db(
+        FakeEngine(),
+        {"CMS001"},
+        label_to_yymm=2503,
+        months_back=3,
+    )
+
+    assert result == {2502: {"CMS001"}}
+    assert len(calls) == 2
+    for sql, params in calls:
+        assert "BETWEEN :label_from_yymm AND :label_to_yymm" in sql
+        assert params == {"label_from_yymm": 2501, "label_to_yymm": 2503}
+
+
+def test_load_eval_ids_from_db_rejects_invalid_month_range() -> None:
+    with pytest.raises(ValueError, match="months_back"):
+        load_eval_ids_from_db(object(), set(), label_to_yymm=2503, months_back=0)

@@ -22,6 +22,7 @@ def score_all(
     ds: DatasetResult,
     threshold: float,
     top_percentile: float | None = 10.0,
+    max_customers: int | None = None,
 ) -> pd.DataFrame:
     """Score all active customers and attach predictions.
 
@@ -29,6 +30,8 @@ def score_all(
         model: Trained XGBoost Booster.
         ds: DatasetResult with x_predict (already scaled).
         threshold: Probability threshold for churn classification.
+        top_percentile: Optional dynamic percentile cutoff.
+        max_customers: Optional operational cap for the exported risk list.
 
     Returns:
         DataFrame with original metadata + churn_probability + churn_flag.
@@ -49,6 +52,26 @@ def score_all(
     scored = ds.active_df.copy()
     scored["churn_probability"] = y_prob
     scored["churn_flag"] = (y_prob >= effective_threshold).astype(int)
+    flagged_count_before_cap = int(scored["churn_flag"].sum())
+
+    if max_customers is not None and flagged_count_before_cap > max_customers:
+        top_indices = (
+            scored.loc[scored["churn_flag"] == 1, "churn_probability"]
+            .nlargest(max_customers)
+            .index
+        )
+        scored["churn_flag"] = 0
+        scored.loc[top_indices, "churn_flag"] = 1
+        logger.info(
+            "Applied operational risk-list cap: %d -> %d customers",
+            flagged_count_before_cap,
+            max_customers,
+        )
+
+    scored.attrs["effective_threshold"] = effective_threshold
+    scored.attrs["risk_top_percentile"] = top_percentile
+    scored.attrs["risk_max_customers"] = max_customers
+    scored.attrs["flagged_count_before_cap"] = flagged_count_before_cap
 
     logger.info(
         "Scored %d customers: effective_threshold=%.4f, flagged=%d (%.1f%%)",
@@ -84,6 +107,10 @@ def compute_score_stats(scored_df: pd.DataFrame) -> dict:
         "risk_count": risk_count,
         "active_count": active_count,
         "risk_ratio": risk_count / max(active_count, 1),
+        "effective_threshold": scored_df.attrs.get("effective_threshold"),
+        "risk_top_percentile": scored_df.attrs.get("risk_top_percentile"),
+        "risk_max_customers": scored_df.attrs.get("risk_max_customers"),
+        "risk_count_before_cap": scored_df.attrs.get("flagged_count_before_cap"),
     }
 
 
@@ -111,7 +138,6 @@ def compute_reasons(
         logger.warning("No feature importance found — skipping reasons")
         return scored_df
 
-    total = sum(importance.values()) or 1.0
     sorted_feats = sorted(importance.items(), key=lambda x: x[1], reverse=True)
     top_feats = [f for f, _ in sorted_feats[:top_n]]
 

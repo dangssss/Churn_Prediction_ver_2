@@ -27,49 +27,62 @@ logger = logging.getLogger(__name__)
 
 def build_leading_prototype(
     engine: Any,
-    eval_ids: set[str],
-    t_obs: pd.Timestamp,
+    eval_id_cohorts: dict[int, set[str]],
     window_size: int,
     alpha_ewma: float,
     sigma_reg: float,
-    lead_offset: int = 2,
+    lead_offset: int = 1,
     min_prototype_samples: int = 10,
 ) -> dict[str, Any]:
     """Build the leading prototype from confirmed churners' features.
 
-    Extracts features from T-(lead_offset) months for confirmed churners
+    Extracts features from each cohort's T-(lead_offset) month snapshot
     and computes the mean vector (μ) and regularized inverse covariance (Σ⁻¹).
 
     Args:
         engine: SQLAlchemy engine.
-        eval_ids: Set of confirmed churn CMS codes.
-        t_obs: Observation date.
+        eval_id_cohorts: Confirmed churn CMS codes grouped by label YYMM.
         window_size: Window size W.
         alpha_ewma: EWMA smoothing parameter.
         sigma_reg: Regularization for covariance inverse (σ_reg * I).
         lead_offset: Months before churn confirmation to sample features.
+            Defaults to 1 to match the next-month inactivity target.
         min_prototype_samples: Minimum confirmed churners required.
 
     Returns:
         Dict with keys: mu, Sigma_inv, sigma2, feature_names, n_confirmed.
         Empty dict if insufficient data.
     """
-    if not eval_ids:
-        logger.warning("eval_ids is empty — prototype will be meaningless")
+    if not eval_id_cohorts:
+        logger.warning("eval_id_cohorts is empty; prototype will be meaningless")
         return {}
 
-    # Load features at T-(lead_offset) months
-    prototype_end = t_obs - pd.DateOffset(months=lead_offset + 1)
-    proto_df = load_window_features(engine, window_size, prototype_end)
+    cohort_frames = []
+    sampled_ids: set[str] = set()
+    for label_yymm, cohort_ids in sorted(eval_id_cohorts.items()):
+        new_ids = cohort_ids - sampled_ids
+        if not new_ids:
+            continue
 
-    if proto_df.empty:
-        logger.warning("Cannot load window at %s for prototype", prototype_end.date())
+        prototype_end = _parse_yymm(label_yymm) - pd.DateOffset(months=lead_offset)
+        proto_df = load_window_features(engine, window_size, prototype_end)
+        if proto_df.empty:
+            logger.warning(
+                "Cannot load prototype window at %s for label cohort %d",
+                prototype_end.date(),
+                label_yymm,
+            )
+            continue
+
+        proto_df = compute_ewma(proto_df, window_size, alpha_ewma)
+        cohort_frames.append(proto_df[proto_df["cms_code_enc"].isin(new_ids)])
+        sampled_ids.update(new_ids)
+
+    if not cohort_frames:
+        logger.warning("No time-aligned prototype windows could be loaded")
         return {}
 
-    proto_df = compute_ewma(proto_df, window_size, alpha_ewma)
-
-    # Filter to confirmed churners only
-    proto_confirmed = proto_df[proto_df["cms_code_enc"].isin(eval_ids)]
+    proto_confirmed = pd.concat(cohort_frames, ignore_index=True)
     feats = [f for f in NUMERIC_FEATURES if f in proto_confirmed.columns]
     x_proto = proto_confirmed[feats].fillna(0).values
 
@@ -112,6 +125,14 @@ def build_leading_prototype(
         "feature_names": feats,
         "n_confirmed": len(x_proto),
     }
+
+
+def _parse_yymm(label_yymm: int) -> pd.Timestamp:
+    """Convert a YYMM label integer into a month-start timestamp."""
+    year, month = divmod(label_yymm, 100)
+    if month < 1 or month > 12:
+        raise ValueError(f"Invalid label_yymm month: {label_yymm}")
+    return pd.Timestamp(year=2000 + year, month=month, day=1)
 
 
 def compute_similarity(

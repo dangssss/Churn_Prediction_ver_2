@@ -23,37 +23,29 @@ class DatasetPipelineConfig:
     """Configuration for the 7-step dataset preparation pipeline.
 
     Attributes:
-        horizon_months: H — prediction horizon in months.
-        step_months: Sliding window step size.
-        gap_days: Gap between feature window end and label start.
+        horizon_months: Fixed at 1 — predict inactivity in the next calendar month.
         w_min: Minimum window size to search.
         min_train_windows: Minimum folds for walk-forward validation.
         data_start: Earliest date to consider for feature computation.
         t_obs_override: Override observation date (None = auto-detect).
 
         min_lifetime_orders: Scope filter — minimum lifetime order count.
-        min_account_age_days: Scope filter — minimum account age.
-        max_inactive_days: Scope filter — max days since last order.
+        min_account_age_months: Scope filter — minimum account age in months.
 
         recency_active: Tier boundary for 'active' (days).
         recency_at_risk: Tier boundary for 'at_risk' (days).
-        recency_reliable_neg: Recency threshold for reliable negative.
-
         alpha_ewma: EWMA smoothing parameter.
-        sim_threshold: Similarity threshold for pseudo-labeling.
         sigma_reg: Regularization for covariance matrix inversion.
 
         label_smooth_eps_confirmed: Label smoothing for confirmed.
-        label_smooth_eps_tier: Label smoothing for tier-based.
         label_smooth_eps_pseudo: Label smoothing for pseudo-labeled.
 
         cskh_file_path: Path to CSKH confirmed churn file (optional).
+        label_months_back: Number of historical CSKH label months allowed.
     """
 
     # ── Window & horizon ──────────────────────────────────
-    horizon_months: int = 2
-    step_months: int = 1
-    gap_days: int = 0
+    horizon_months: int = 1
     w_min: int = 3
     min_train_windows: int = 5
     data_start: date = field(default_factory=lambda: date(2025, 1, 1))
@@ -62,29 +54,28 @@ class DatasetPipelineConfig:
     # ── Scope filter ──────────────────────────────────────
     min_lifetime_orders: int = 3
     min_lifetime_gmv: float = 0.0
-    min_account_age_days: int = 30
-    max_inactive_days: int = 365
+    min_account_age_months: int = 1
 
     # ── Tiering ───────────────────────────────────────────
     recency_active: int = 90
     recency_at_risk: int = 180
-    recency_reliable_neg: int = 30
+    reliable_neg_recency_quantile: float = 0.25
 
     # ── EWMA & similarity ─────────────────────────────────
     alpha_ewma: float = 0.3
-    sim_threshold: float = 0.80
+    similarity_quantile: float = 0.95
     sigma_reg: float = 0.01
 
     # ── Label smoothing ───────────────────────────────────
     label_smooth_eps_confirmed: float = 0.00
-    label_smooth_eps_tier: float = 0.05
     label_smooth_eps_pseudo: float = 0.10
 
     # ── Pseudo-labeling ───────────────────────────────────
-    trend_down_ratio: float = 0.85
+    trend_down_quantile: float = 0.25
 
     # ── PU learning ───────────────────────────────────────
-    pu_weight_min: float = 0.01
+    min_aux_weight: float = 0.01
+    max_aux_weight: float = 0.80
 
     # ── Prototype ─────────────────────────────────────────
     min_prototype_samples: int = 10
@@ -92,11 +83,11 @@ class DatasetPipelineConfig:
     # ── CSKH file ─────────────────────────────────────────
     cskh_file_path: Path | None = None
     cskh_dir: Path | None = None
+    label_months_back: int = 6
 
     # ── Fallback behavior (khi không có file CSKH) ────────
     allow_prototype_fallback: bool = True
     max_prototype_age_months: int = 3
-    fallback_pu_weight: float = 0.05
 
     def validate(self) -> None:
         """Validate configuration values.
@@ -104,20 +95,42 @@ class DatasetPipelineConfig:
         Raises:
             ValueError: If any parameter is invalid.
         """
-        if self.horizon_months < 1:
-            raise ValueError(f"horizon_months must be >= 1, got {self.horizon_months}")
+        if self.horizon_months != 1:
+            raise ValueError(
+                "horizon_months must be 1 for the next-month inactivity target, "
+                f"got {self.horizon_months}"
+            )
         if self.w_min < 2:
             raise ValueError(f"w_min must be >= 2, got {self.w_min}")
         if self.min_train_windows < 2:
             raise ValueError(f"min_train_windows must be >= 2, got {self.min_train_windows}")
+        if self.min_lifetime_orders < 0:
+            raise ValueError(f"min_lifetime_orders must be >= 0, got {self.min_lifetime_orders}")
+        if self.min_lifetime_gmv < 0:
+            raise ValueError(f"min_lifetime_gmv must be >= 0, got {self.min_lifetime_gmv}")
+        if self.min_account_age_months < 0:
+            raise ValueError(f"min_account_age_months must be >= 0, got {self.min_account_age_months}")
         if not (0 < self.alpha_ewma < 1):
             raise ValueError(f"alpha_ewma must be in (0, 1), got {self.alpha_ewma}")
-        if not (0 <= self.sim_threshold <= 1):
-            raise ValueError(f"sim_threshold must be in [0, 1], got {self.sim_threshold}")
+        for name, value in (
+            ("similarity_quantile", self.similarity_quantile),
+            ("reliable_neg_recency_quantile", self.reliable_neg_recency_quantile),
+            ("trend_down_quantile", self.trend_down_quantile),
+        ):
+            if not (0 <= value <= 1):
+                raise ValueError(f"{name} must be in [0, 1], got {value}")
+        if not (0 < self.min_aux_weight <= self.max_aux_weight <= 1):
+            raise ValueError(
+                "auxiliary weights must satisfy "
+                f"0 < min_aux_weight <= max_aux_weight <= 1, got "
+                f"{self.min_aux_weight}, {self.max_aux_weight}"
+            )
         if self.recency_active >= self.recency_at_risk:
             raise ValueError(
                 f"recency_active ({self.recency_active}) must be < recency_at_risk ({self.recency_at_risk})"
             )
+        if self.label_months_back < 1:
+            raise ValueError(f"label_months_back must be >= 1, got {self.label_months_back}")
 
     def to_safe_dict(self) -> dict:
         """Return config as a logging-safe dictionary."""
@@ -127,10 +140,17 @@ class DatasetPipelineConfig:
             "data_start": str(self.data_start),
             "t_obs_override": str(self.t_obs_override) if self.t_obs_override else None,
             "min_lifetime_orders": self.min_lifetime_orders,
+            "min_lifetime_gmv": self.min_lifetime_gmv,
+            "min_account_age_months": self.min_account_age_months,
             "recency_active": self.recency_active,
             "recency_at_risk": self.recency_at_risk,
             "alpha_ewma": self.alpha_ewma,
-            "sim_threshold": self.sim_threshold,
+            "similarity_quantile": self.similarity_quantile,
+            "reliable_neg_recency_quantile": self.reliable_neg_recency_quantile,
+            "trend_down_quantile": self.trend_down_quantile,
+            "min_aux_weight": self.min_aux_weight,
+            "max_aux_weight": self.max_aux_weight,
+            "label_months_back": self.label_months_back,
         }
 
 

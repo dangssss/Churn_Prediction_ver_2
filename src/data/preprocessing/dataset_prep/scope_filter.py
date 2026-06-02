@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 import pandas as pd
 from sqlalchemy import text
 
+from data.preprocessing.dataset_prep.cskh_loader import parse_cskh_filename
+
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
 
@@ -28,6 +30,9 @@ logger = logging.getLogger(__name__)
 def load_working_set(
     engine: Engine,
     min_lifetime_orders: int,
+    min_lifetime_gmv: float,
+    min_account_age_months: int,
+    snapshot_month: pd.Timestamp,
 ) -> pd.DataFrame:
     """Load customers qualifying for churn analysis.
 
@@ -37,6 +42,9 @@ def load_working_set(
     Args:
         engine: SQLAlchemy engine instance.
         min_lifetime_orders: Minimum number of lifetime orders.
+        min_lifetime_gmv: Minimum lifetime revenue.
+        min_account_age_months: Minimum account age in months.
+        snapshot_month: Feature cutoff month for point-in-time scope filtering.
 
     Returns:
         DataFrame with one row per qualifying customer.
@@ -79,17 +87,33 @@ def load_working_set(
             cl.most_common_rec_district,
             cl.most_common_rec_commune,
             cl.most_common_region
-        FROM data_static.cus_lifetime cl
+        FROM data_static.cus_lifetime_snapshot cl
         WHERE cl.lifetime_total_items >= :min_orders
+          AND cl.lifetime_total_revenue >= :min_gmv
+          AND cl.tenure >= :min_account_age_months
+          AND cl.snapshot_month = :snapshot_month
     """)
 
     with engine.connect() as conn:
-        df = pd.read_sql(sql, conn, params={"min_orders": min_lifetime_orders})
+        df = pd.read_sql(
+            sql,
+            conn,
+            params={
+                "min_orders": min_lifetime_orders,
+                "min_gmv": min_lifetime_gmv,
+                "min_account_age_months": min_account_age_months,
+                "snapshot_month": snapshot_month.to_period("M").to_timestamp(),
+            },
+        )
 
     logger.info(
-        "Scope filter: loaded %d customers (min_orders=%d)",
+        "Scope filter: loaded %d customers "
+        "(min_orders=%d, min_gmv=%.2f, min_account_age_months=%d, snapshot_month=%s)",
         len(df),
         min_lifetime_orders,
+        min_lifetime_gmv,
+        min_account_age_months,
+        snapshot_month.strftime("%Y-%m"),
     )
     return df
 
@@ -97,6 +121,8 @@ def load_working_set(
 def load_eval_ids(
     cskh_file_path: Path | None,
     working_ids: set[str],
+    *,
+    label_to_yymm: int,
 ) -> set[str]:
     """Load confirmed churn IDs from CSKH file and intersect with working set.
 
@@ -104,6 +130,7 @@ def load_eval_ids(
         cskh_file_path: Path to CSKH CSV with ``cms_code_enc`` column.
             If None or file not found, returns empty set.
         working_ids: Set of CMS codes in the working set.
+        label_to_yymm: Inclusive latest label month allowed for the run.
 
     Returns:
         Set of confirmed churn IDs that are in scope.
@@ -116,6 +143,20 @@ def load_eval_ids(
     if not path.exists():
         logger.warning("CSKH file not found: %s — eval_ids will be empty", path)
         return set()
+
+    parsed = parse_cskh_filename(path.name)
+    if parsed is None:
+        raise ValueError(
+            f"Cannot determine label month from CSKH file {path.name}. "
+            "Expected Roi_bo_MM_YY.csv/.xlsx or label_YYMM.csv"
+        )
+    month, year = parsed
+    label_yymm = year * 100 + month
+    if label_yymm > label_to_yymm:
+        raise ValueError(
+            f"CSKH file {path.name} has label_yymm={label_yymm}, "
+            f"which is after allowed cutoff {label_to_yymm}"
+        )
 
     cskh_df = pd.read_csv(path)
 

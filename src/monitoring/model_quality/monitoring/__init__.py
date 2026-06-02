@@ -1,1 +1,1 @@
-"""Monitoring utilities (drift, score drift, backtest, run logs)."""
+"""Shared model-quality monitoring primitives used by EDA."""

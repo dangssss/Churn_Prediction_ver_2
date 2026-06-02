@@ -1,7 +1,6 @@
 """Persist EDA report to PostgreSQL.
 
-Convention: follows upsert pattern from
-``monitoring.model_quality.monitoring.drift.upsert_feature_drift``.
+Convention: idempotent PostgreSQL upserts for generated EDA reports.
 """
 
 from __future__ import annotations

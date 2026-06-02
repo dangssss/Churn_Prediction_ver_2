@@ -23,7 +23,7 @@ BCCP_ORDERITEM_COLUMNS: List[Tuple[str, str, int]] = [
     ("length_size", "INT", 6),
     ("width_size", "INT", 7),
     ("height_size", "INT", 8),
-    ("total_fee", "INT", 9),
+    ("total_fee", "BIGINT", 9),
     ("is_domestic", "INT", 10),
     ("country_code", "VARCHAR(20)", 11),
     ("send_province_code", "INT", 12),

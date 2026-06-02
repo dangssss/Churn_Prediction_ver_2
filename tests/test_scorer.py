@@ -5,13 +5,32 @@ Convention: 10-Code_design §3.1 — single-responsibility functions.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
-import pytest
 
-from modeling.export.scorer import compute_reasons, compute_score_stats
+from modeling.export.scorer import compute_reasons, compute_score_stats, score_all
+
+
+def test_score_all_caps_operational_risk_list(monkeypatch) -> None:
+    monkeypatch.setattr("modeling.export.scorer.xgb.DMatrix", lambda *args, **kwargs: None)
+    model = MagicMock()
+    model.predict.return_value = np.array([0.95, 0.90, 0.80, 0.70])
+    ds = SimpleNamespace(
+        x_predict=pd.DataFrame({"feat": [1, 2, 3, 4]}),
+        feature_names=["feat"],
+        active_df=pd.DataFrame({"cms_code_enc": ["A", "B", "C", "D"]}),
+    )
+
+    scored = score_all(model, ds, threshold=0.0, top_percentile=100.0, max_customers=2)
+
+    assert scored["churn_flag"].tolist() == [1, 1, 0, 0]
+    stats = compute_score_stats(scored)
+    assert stats["risk_count"] == 2
+    assert stats["risk_count_before_cap"] == 4
+    assert stats["risk_max_customers"] == 2
 
 
 class TestComputeScoreStats:

@@ -8,8 +8,8 @@ Schedule: None (triggered by ds_churn_ingest)
 from __future__ import annotations
 
 from airflow import DAG
-from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from kubernetes.client import models as k8s
 from pendulum import datetime
 
@@ -27,11 +27,11 @@ with DAG(
     volume = k8s.V1Volume(
         name="churn-data-mount",
         # prod: path="/data/churn_prediction/ftp_churn"
-        host_path=k8s.V1HostPathVolumeSource(path="/churn_data")
+        host_path=k8s.V1HostPathVolumeSource(path="/data")
     )
     volume_mount = k8s.V1VolumeMount(
         name="churn-data-mount",
-        mount_path="/churn_data",
+        mount_path="/data",
         sub_path=None,
         read_only=False
     )
@@ -43,7 +43,14 @@ with DAG(
         image="churn_app:v2",
         image_pull_policy="IfNotPresent",
         container_security_context=k8s.V1SecurityContext(run_as_user=0),
-        cmds=["python", "-m", "features.engineering.feature_gen.run_feature_generation", "--start", "2025-01-01", "--incremental"],
+        cmds=[
+            "python",
+            "-m",
+            "features.engineering.feature_gen.run_feature_generation",
+            "--start",
+            "2025-01-01",
+            "--incremental",
+        ],
         env_vars={
             "WINDOW_SCHEMA": "data_window",
             "TZ": "Asia/Ho_Chi_Minh",
@@ -63,7 +70,6 @@ with DAG(
         trigger_dag_id="ds_churn_pipeline",
         conf={
             "upstream_features_run_id": "{{ run_id }}",
-            "logical_date": "{{ ds }}",
         },
         wait_for_completion=False,
         reset_dag_run=True,

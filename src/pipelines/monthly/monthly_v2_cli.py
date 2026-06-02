@@ -56,7 +56,14 @@ def main() -> int:
             candidates = []
             if incoming_dir:
                 candidates.append(Path(incoming_dir) / "cskh")
-            candidates.extend([Path("data/incoming/cskh"), Path("/churn_data/incoming/cskh")])
+            candidates.extend(
+                [
+                    Path("data/cskh"),
+                    Path("/data/cskh"),
+                    Path("data/incoming/cskh"),
+                    Path("/data/incoming/cskh"),
+                ]
+            )
             for candidate in candidates:
                 if candidate.exists():
                     cskh_dir = str(candidate)

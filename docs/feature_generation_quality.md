@@ -7,7 +7,7 @@ Feature generation writes operational quality audits to
 
 | `window_table` value | Meaning |
 |---|---|
-| `__lifetime__` | Static `data_static.cus_lifetime` validation |
+| `__lifetime__` | Latest compatibility `data_static.cus_lifetime` validation |
 | `data_window.cus_feature_{W}m_{YYMM}_{YYMM}` | Per-window validation and summary metrics |
 | `__batch_consistency__` | Cross-window and lifetime consistency checks |
 
@@ -29,7 +29,8 @@ non-finite values, ratio ranges, non-negative totals, activity ranges,
 
 Batch consistency checks that nested windows ending in the same month do not
 lose item or revenue totals as the window grows. It also checks the largest
-current window against `data_static.cus_lifetime`.
+current window against the matching row in
+`data_static.cus_lifetime_snapshot`.
 
 The pipeline fails before downstream dataset preparation if any enforced rule
 fails.
@@ -40,7 +41,12 @@ fails.
   activity relative to the window start. For example, `2025-01-01` through
   `2025-02-02` yields `33`.
 - `lifetime_months_active` is the number of distinct `report_month` values
-  with `item_count > 0`, bounded from `2025-01-01` through `CURRENT_DATE`.
-
-`avg_noservice_days` and `max_consecutive_inactive` intentionally retain their
-existing behavior until their business definitions are confirmed.
+  with `item_count > 0`, bounded from `2025-01-01` through the snapshot
+  cutoff month.
+- A no-service gap is a consecutive sequence of days without BCCP activity
+  inside the sliding window. Leading and trailing window boundaries are
+  included.
+- `avg_noservice_days` is the average length of positive no-service gaps.
+- `max_consecutive_inactive` is the longest no-service gap.
+- If a customer has no BCCP activity in a window, both no-service features
+  equal the full inclusive window duration.

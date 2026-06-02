@@ -46,7 +46,7 @@ def walkforward_auc(
         engine: SQLAlchemy engine.
         window_size: Window size W.
         all_months: All months in data range.
-        horizon_months: Prediction horizon H.
+        horizon_months: Must be 1 for the next-month inactivity target.
         alpha_ewma: EWMA smoothing parameter.
         min_train_windows: Minimum training windows before first fold.
         random_seed: Random state for reproducibility.
@@ -151,7 +151,7 @@ def find_best_w(
         engine: SQLAlchemy engine.
         w_search: List of W values to evaluate.
         all_months: All months in data range.
-        horizon_months: Prediction horizon H.
+        horizon_months: Must be 1 for the next-month inactivity target.
         alpha_ewma: EWMA smoothing parameter.
         min_train_windows: Minimum training windows per fold.
         random_seed: Random state.

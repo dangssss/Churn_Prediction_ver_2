@@ -1,7 +1,6 @@
 """DDL for the ``eda_reports`` schema.
 
-Convention: follows the pattern in
-``monitoring.model_quality.monitoring.ddl.ensure_monitoring_schema``.
+Convention: idempotent schema creation for PostgreSQL report persistence.
 """
 
 from __future__ import annotations

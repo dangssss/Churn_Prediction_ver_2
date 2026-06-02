@@ -74,11 +74,17 @@ def run_sanity_checks(result: DatasetResult, eval_ids: set[str]) -> bool:
         critical=True,
     )
 
-    # 6. Eval set size matches
-    eval_size_ok = len(result.x_eval) == len(eval_ids) or len(eval_ids) == 0
+    # 6. Eval set contains only actual-label rows and includes holdout positives
+    eval_size_ok = len(result.x_eval) == len(result.y_eval)
     _check(
         eval_size_ok,
-        f"[6] Eval set size: {len(result.x_eval)} (expected {len(eval_ids)})",
+        f"[6] Eval feature/label size: {len(result.x_eval)}/{len(result.y_eval)}",
+        critical=True,
+    )
+    eval_positive_count = int((result.y_eval == 1).sum())
+    _check(
+        eval_positive_count > 0 or len(eval_ids) == 0,
+        f"[7] Eval confirmed positives: {eval_positive_count}",
     )
 
     if checks_passed:

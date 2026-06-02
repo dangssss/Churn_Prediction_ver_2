@@ -5,4 +5,4 @@ nodes:
 - role: control-plane
   extraMounts:
   - hostPath: "b:\\ssss\\Churn_Prediction\\data"
-    containerPath: /churn_data
+    containerPath: /data

@@ -4,16 +4,19 @@ CREATE INDEX IF NOT EXISTS idx_cas_info_code ON public.cas_info(cms_code_enc);
 CREATE INDEX IF NOT EXISTS idx_cms_complaint_code_date ON public.cms_complaint(cms_code_enc, create_complaint_date);
 CREATE INDEX IF NOT EXISTS idx_cms_complaint_date ON public.cms_complaint(create_complaint_date);
 
+DELETE FROM data_static.cus_lifetime_snapshot
+WHERE snapshot_month = DATE '{SNAPSHOT_MONTH}';
+
 WITH customer_agg AS (
     SELECT
         cms_code_enc,
         -- Volume metrics
         SUM(item_count)::bigint AS lifetime_total_items,
-        SUM(total_fee)::bigint AS lifetime_total_revenue,
+        SUM(GREATEST(total_fee, 0))::bigint AS lifetime_total_revenue,
         SUM(weight_kg)::double precision AS lifetime_total_weight,
         SUM(total_complaint)::bigint AS lifetime_total_complaint,
         -- Per-item ratios (computed inline to avoid re-scanning)
-        COALESCE(SUM(total_fee)::double precision / NULLIF(SUM(item_count),0), 0) AS lifetime_avg_revenue_per_item,
+        COALESCE(SUM(GREATEST(total_fee, 0))::double precision / NULLIF(SUM(item_count),0), 0) AS lifetime_avg_revenue_per_item,
         COALESCE(SUM(weight_kg)::double precision / NULLIF(SUM(item_count),0), 0) AS lifetime_avg_weight_per_item,
         -- Activity
         (COUNT(DISTINCT date_trunc('month', report_month))
@@ -42,7 +45,7 @@ WITH customer_agg AS (
         SUM(COALESCE(ser_q,0))::bigint AS ser_q
     FROM public.cas_customer
     WHERE report_month >= DATE '2025-01-01'
-      AND report_month <= CURRENT_DATE
+      AND report_month <= DATE '{AS_OF_DATE}'
     GROUP BY cms_code_enc
 ),
 
@@ -58,6 +61,8 @@ info AS (
         cus_poscode,
         cus_province
     FROM public.cas_info
+    WHERE customer_update_date IS NULL
+       OR customer_update_date < DATE '{AS_OF_DATE}' + INTERVAL '1 day'
     ORDER BY cms_code_enc, customer_update_date DESC NULLS LAST
 ),
 
@@ -68,7 +73,7 @@ complaint_agg AS (
         MODE() WITHIN GROUP (ORDER BY complaint_code)::int AS most_common_complaint
     FROM public.cms_complaint
     WHERE create_complaint_date >= DATE '2025-01-01'
-      AND create_complaint_date < CURRENT_DATE + INTERVAL '1 day'
+      AND create_complaint_date < DATE '{AS_OF_DATE}' + INTERVAL '1 day'
     GROUP BY cms_code_enc
 ),
 
@@ -83,12 +88,12 @@ bccp_agg AS (
         (MODE() WITHIN GROUP (ORDER BY region))::varchar AS most_common_region
     FROM {BCCP_SRC}
     WHERE sending_time >= DATE '2025-01-01'
-      AND sending_time < CURRENT_DATE + INTERVAL '1 day'
+      AND sending_time < DATE '{AS_OF_DATE}' + INTERVAL '1 day'
     GROUP BY cms_code_enc
 )
 
-INSERT INTO data_static.cus_lifetime (
-    cms_code_enc, is_corporate,
+INSERT INTO data_static.cus_lifetime_snapshot (
+    snapshot_month, cms_code_enc, is_corporate,
     contract_classify, contract_service, custype, contract_sig_first, tenure, contract_mgr_org, cus_poscode, cus_province,
     lifetime_total_items, lifetime_total_revenue, lifetime_total_weight, lifetime_total_complaint,
     lifetime_avg_revenue_per_item, lifetime_avg_weight_per_item, lifetime_months_active, lifetime_days_active,
@@ -99,15 +104,17 @@ INSERT INTO data_static.cus_lifetime (
     lifetime_pct_international, lifetime_pct_intra_province,
     most_common_rec_province, most_common_rec_district, most_common_rec_commune, most_common_region)
 SELECT
+    DATE '{SNAPSHOT_MONTH}',
     ca.cms_code_enc,
     (LEFT(ca.cms_code_enc, 1) = 'T') AS is_corporate,
     COALESCE(i.contract_classify, 1),
     COALESCE(i.contract_service, 62),
     COALESCE(i.custype, 1),
     COALESCE(i.contract_sig_first, date_trunc('month', ca.first_month))::timestamp,
-    COALESCE(i.tenure,
-        (EXTRACT(year from age(now(), COALESCE(i.contract_sig_first, date_trunc('month', ca.first_month))))*12 + 
-         EXTRACT(month from age(now(), COALESCE(i.contract_sig_first, date_trunc('month', ca.first_month)))))::int
+    GREATEST(
+        0,
+        (EXTRACT(year from age(DATE '{AS_OF_DATE}', COALESCE(i.contract_sig_first, date_trunc('month', ca.first_month))))*12 +
+         EXTRACT(month from age(DATE '{AS_OF_DATE}', COALESCE(i.contract_sig_first, date_trunc('month', ca.first_month)))))::int
     ),
     i.contract_mgr_org,
     i.cus_poscode,
@@ -158,7 +165,7 @@ FROM customer_agg ca
 LEFT JOIN info i ON i.cms_code_enc = ca.cms_code_enc
 LEFT JOIN complaint_agg com ON com.cms_code_enc = ca.cms_code_enc
 LEFT JOIN bccp_agg b ON b.cms_code_enc = ca.cms_code_enc
-ON CONFLICT (cms_code_enc) DO UPDATE SET
+ON CONFLICT (snapshot_month, cms_code_enc) DO UPDATE SET
     contract_classify = EXCLUDED.contract_classify,
     contract_service = EXCLUDED.contract_service,
     custype = EXCLUDED.custype,

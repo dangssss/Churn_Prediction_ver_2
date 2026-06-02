@@ -48,3 +48,16 @@ CREATE TABLE IF NOT EXISTS data_static.cus_lifetime (
     
     PRIMARY KEY (cms_code_enc)
 );
+
+CREATE TABLE IF NOT EXISTS data_static.cus_lifetime_snapshot (
+    LIKE data_static.cus_lifetime INCLUDING DEFAULTS
+);
+
+ALTER TABLE data_static.cus_lifetime_snapshot
+    ADD COLUMN IF NOT EXISTS snapshot_month DATE;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cus_lifetime_snapshot_month_code
+    ON data_static.cus_lifetime_snapshot(snapshot_month, cms_code_enc);
+
+CREATE INDEX IF NOT EXISTS idx_cus_lifetime_snapshot_code_month
+    ON data_static.cus_lifetime_snapshot(cms_code_enc, snapshot_month);

@@ -115,7 +115,7 @@ kubectl port-forward svc/airflow-api-server 8080:8080 -n default
 Khi bạn bật DAG (vd: `ds_churn_pipeline`), K8s sẽ tự động sinh ra các Pod độc lập (tên dạng `churn-pipeline-v2-pod-xxxxx`) để chạy task tính toán và tắt đi sau khi hoàn tất.
 
 > [!NOTE] 
-> Lưu ý về OS Path: Việc mount ổ đĩa Windows đã được xử lý ở tầng cluster qua file `kind-config.yaml`. Các file DAG chỉ cần sử dụng đường dẫn chuẩn của container: `path="/churn_data"`.
+> Lưu ý về OS Path: Việc mount ổ đĩa Windows đã được xử lý ở tầng cluster qua file `kind-config.yaml`. Các file DAG chỉ cần sử dụng đường dẫn chuẩn của container: `path="/data"`.
 **Bước 5: Cài đặt Giám sát (Prometheus & Grafana)**
 Trên hệ thống máy ảo độc lập, chúng ta cần cài đặt Stack Giám sát để theo dõi tài nguyên RAM/CPU nếu không sẽ bị mù thông tin.
 ```bash

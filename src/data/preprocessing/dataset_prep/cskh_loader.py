@@ -13,6 +13,8 @@ Conventions applied:
   - 02-Config §4.3: No os.getenv here — paths from caller.
   - 08-Security §7.1: No credentials in logs.
 """
+# SQL identifiers in this module are fixed internal constants; row values are bound parameters.
+# ruff: noqa: S608
 
 from __future__ import annotations
 
@@ -56,6 +58,18 @@ _RAW_LABEL_COLUMNS = (
     "tinh_trang_kh",
     "thang_ks",
 )
+
+
+def shift_yymm(yymm: int, months: int) -> int:
+    """Shift a YYMM integer by a number of calendar months."""
+    year = 2000 + yymm // 100
+    month = yymm % 100
+    if not 1 <= month <= 12:
+        raise ValueError(f"Invalid YYMM value: {yymm}")
+
+    zero_based_month = year * 12 + month - 1 + months
+    shifted_year, shifted_month = divmod(zero_based_month, 12)
+    return shifted_year % 100 * 100 + shifted_month + 1
 
 
 def ensure_cskh_schema(engine: Engine) -> None:
@@ -111,9 +125,18 @@ def ensure_cskh_schema(engine: Engine) -> None:
         f"ALTER TABLE {CSKH_SCHEMA}.{CSKH_RAW_LABEL_TABLE} ADD COLUMN IF NOT EXISTS source_member VARCHAR(255)",
         f"""CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_labels_yymm_key_type
             ON {CSKH_SCHEMA}.{CSKH_RAW_LABEL_TABLE}(label_yymm, customer_key_type, customer_key)""",
-        f"CREATE INDEX IF NOT EXISTS idx_customer_labels_label_yymm ON {CSKH_SCHEMA}.{CSKH_RAW_LABEL_TABLE}(label_yymm)",
-        f"CREATE INDEX IF NOT EXISTS idx_customer_labels_cms_code_enc ON {CSKH_SCHEMA}.{CSKH_RAW_LABEL_TABLE}(cms_code_enc)",
-        f"CREATE INDEX IF NOT EXISTS idx_customer_labels_crm_code_enc ON {CSKH_SCHEMA}.{CSKH_RAW_LABEL_TABLE}(crm_code_enc)",
+        (
+            f"CREATE INDEX IF NOT EXISTS idx_customer_labels_label_yymm "
+            f"ON {CSKH_SCHEMA}.{CSKH_RAW_LABEL_TABLE}(label_yymm)"
+        ),
+        (
+            f"CREATE INDEX IF NOT EXISTS idx_customer_labels_cms_code_enc "
+            f"ON {CSKH_SCHEMA}.{CSKH_RAW_LABEL_TABLE}(cms_code_enc)"
+        ),
+        (
+            f"CREATE INDEX IF NOT EXISTS idx_customer_labels_crm_code_enc "
+            f"ON {CSKH_SCHEMA}.{CSKH_RAW_LABEL_TABLE}(crm_code_enc)"
+        ),
     ]
     with engine.begin() as conn:
         for stmt in ddl:
@@ -343,7 +366,8 @@ def _insert_confirmed_ids(
     label_yymm = year * 100 + month
     insert_sql = text(f"""
         INSERT INTO {CSKH_SCHEMA}.{CSKH_TABLE}
-            (cms_code_enc, file_month, file_year, source_file, source_zip, source_member, customer_key_type, label_yymm, loaded_at)
+            (cms_code_enc, file_month, file_year, source_file, source_zip,
+             source_member, customer_key_type, label_yymm, loaded_at)
         VALUES
             (:cms, :m, :y, :src, :zip, :member, :key_type, :label_yymm, NOW())
         ON CONFLICT (cms_code_enc, file_month, file_year) DO UPDATE SET
@@ -408,7 +432,10 @@ def load_cskh_file_to_db(
     if skip_if_exists:
         with engine.connect() as conn:
             result = conn.execute(
-                text(f"SELECT COUNT(*) FROM {CSKH_SCHEMA}.{CSKH_TABLE} WHERE file_month = :m AND file_year = :y"),
+                text(
+                    f"SELECT COUNT(*) FROM {CSKH_SCHEMA}.{CSKH_TABLE} "
+                    "WHERE file_month = :m AND file_year = :y"
+                ),
                 {"m": month, "y": year},
             )
             count = result.scalar()
@@ -586,54 +613,77 @@ def scan_and_load_cskh_dir(
     return results
 
 
-def load_eval_ids_from_db(
+def load_eval_id_cohorts_from_db(
     engine: Engine,
     working_ids: set[str],
     *,
+    label_to_yymm: int,
     months_back: int = 6,
-) -> set[str]:
-    """Load confirmed churn IDs from DB (all months within range).
+) -> dict[int, set[str]]:
+    """Load confirmed churn IDs grouped by label month.
 
     Args:
         engine: SQLAlchemy engine.
         working_ids: Set of CMS codes in scope (for intersection).
+        label_to_yymm: Inclusive latest label month allowed for the run.
         months_back: How many months of confirmed data to include.
 
     Returns:
-        Set of confirmed churn IDs that are in scope.
+        Mapping from label YYMM to confirmed churn IDs that are in scope.
     """
+    if months_back < 1:
+        raise ValueError(f"months_back must be >= 1, got {months_back}")
+
+    label_from_yymm = shift_yymm(label_to_yymm, -(months_back - 1))
     ensure_cskh_schema(engine)
 
     sql = text(f"""
         WITH raw_direct AS (
-            SELECT DISTINCT NULLIF(TRIM(cms_code_enc), '') AS cms_code_enc
+            SELECT DISTINCT
+                label_yymm,
+                NULLIF(TRIM(cms_code_enc), '') AS cms_code_enc
             FROM {CSKH_SCHEMA}.{CSKH_RAW_LABEL_TABLE}
             WHERE NULLIF(TRIM(cms_code_enc), '') IS NOT NULL
+              AND label_yymm BETWEEN :label_from_yymm AND :label_to_yymm
         ),
-        raw_crm_resolved AS (
-            SELECT DISTINCT NULLIF(TRIM(ci.cms_code_enc), '') AS cms_code_enc
+        raw_crm_matches AS (
+            SELECT
+                cl.label_yymm,
+                NULLIF(TRIM(cl.crm_code_enc), '') AS crm_code_enc,
+                MIN(NULLIF(TRIM(ci.cms_code_enc), '')) AS cms_code_enc,
+                COUNT(DISTINCT NULLIF(TRIM(ci.cms_code_enc), '')) AS n_cms
             FROM {CSKH_SCHEMA}.{CSKH_RAW_LABEL_TABLE} cl
             JOIN public.cas_info ci
                 ON NULLIF(TRIM(ci.crm_code_enc), '') = NULLIF(TRIM(cl.crm_code_enc), '')
             WHERE NULLIF(TRIM(cl.cms_code_enc), '') IS NULL
               AND NULLIF(TRIM(cl.crm_code_enc), '') IS NOT NULL
               AND NULLIF(TRIM(ci.cms_code_enc), '') IS NOT NULL
+              AND cl.label_yymm BETWEEN :label_from_yymm AND :label_to_yymm
+            GROUP BY cl.label_yymm, NULLIF(TRIM(cl.crm_code_enc), '')
+        ),
+        raw_crm_resolved AS (
+            SELECT label_yymm, cms_code_enc
+            FROM raw_crm_matches
+            WHERE n_cms = 1
         ),
         confirmed_direct AS (
-            SELECT DISTINCT NULLIF(TRIM(cms_code_enc), '') AS cms_code_enc
+            SELECT DISTINCT
+                label_yymm,
+                NULLIF(TRIM(cms_code_enc), '') AS cms_code_enc
             FROM {CSKH_SCHEMA}.{CSKH_TABLE}
-            WHERE customer_key_type IS NULL OR customer_key_type = 'cms_code_enc'
+            WHERE (customer_key_type IS NULL OR customer_key_type = 'cms_code_enc')
+              AND label_yymm BETWEEN :label_from_yymm AND :label_to_yymm
         )
-        SELECT DISTINCT cms_code_enc
+        SELECT DISTINCT label_yymm, cms_code_enc
         FROM (
-            SELECT cms_code_enc FROM confirmed_direct
+            SELECT label_yymm, cms_code_enc FROM confirmed_direct
             UNION
-            SELECT cms_code_enc FROM raw_direct
+            SELECT label_yymm, cms_code_enc FROM raw_direct
             UNION
-            SELECT cms_code_enc FROM raw_crm_resolved
+            SELECT label_yymm, cms_code_enc FROM raw_crm_resolved
         ) resolved
         WHERE cms_code_enc IS NOT NULL
-        ORDER BY cms_code_enc
+        ORDER BY label_yymm, cms_code_enc
     """)
 
     stats_sql = text(f"""
@@ -642,6 +692,7 @@ def load_eval_ids_from_db(
             FROM {CSKH_SCHEMA}.{CSKH_RAW_LABEL_TABLE}
             WHERE NULLIF(TRIM(cms_code_enc), '') IS NULL
               AND NULLIF(TRIM(crm_code_enc), '') IS NOT NULL
+              AND label_yymm BETWEEN :label_from_yymm AND :label_to_yymm
         ),
         crm_matches AS (
             SELECT
@@ -654,22 +705,32 @@ def load_eval_ids_from_db(
         )
         SELECT
             COUNT(*) AS raw_crm_keys,
-            COUNT(*) FILTER (WHERE n_cms > 0) AS resolved_crm_keys,
+            COUNT(*) FILTER (WHERE n_cms = 1) AS resolved_crm_keys,
             COUNT(*) FILTER (WHERE n_cms = 0) AS unresolved_crm_keys,
             COUNT(*) FILTER (WHERE n_cms > 1) AS ambiguous_crm_keys
         FROM crm_matches
     """)
 
+    params = {
+        "label_from_yymm": label_from_yymm,
+        "label_to_yymm": label_to_yymm,
+    }
     with engine.connect() as conn:
-        df = pd.read_sql(sql, conn)
-        stats_df = pd.read_sql(stats_sql, conn)
+        df = pd.read_sql(sql, conn, params=params)
+        stats_df = pd.read_sql(stats_sql, conn, params=params)
 
     if df.empty:
         logger.warning("No confirmed churners found in DB")
-        return set()
+        return {}
 
-    all_ids = set(df["cms_code_enc"].astype(str).str.strip())
-    in_scope = all_ids & working_ids
+    df["cms_code_enc"] = df["cms_code_enc"].astype(str).str.strip()
+    all_ids = set(df["cms_code_enc"])
+    in_scope_df = df[df["cms_code_enc"].isin(working_ids)]
+    cohorts = {
+        int(label_yymm): set(group["cms_code_enc"])
+        for label_yymm, group in in_scope_df.groupby("label_yymm")
+    }
+    in_scope_ids = set().union(*cohorts.values()) if cohorts else set()
 
     if not stats_df.empty:
         stats = stats_df.iloc[0].to_dict()
@@ -682,8 +743,27 @@ def load_eval_ids_from_db(
         )
 
     logger.info(
-        "CSKH from DB: %d total, %d in scope",
+        "CSKH from DB: %d total, %d in scope, label range=%d..%d",
         len(all_ids),
-        len(in_scope),
+        len(in_scope_ids),
+        label_from_yymm,
+        label_to_yymm,
     )
-    return in_scope
+    return cohorts
+
+
+def load_eval_ids_from_db(
+    engine: Engine,
+    working_ids: set[str],
+    *,
+    label_to_yymm: int,
+    months_back: int = 6,
+) -> set[str]:
+    """Load the union of time-bounded confirmed churn IDs from the database."""
+    cohorts = load_eval_id_cohorts_from_db(
+        engine,
+        working_ids,
+        label_to_yymm=label_to_yymm,
+        months_back=months_back,
+    )
+    return set().union(*cohorts.values()) if cohorts else set()

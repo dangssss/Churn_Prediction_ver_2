@@ -1,10 +1,10 @@
 """Step 4 — Label construction.
 
-Build label (y_raw) from customer activity in the horizon period
+Build label (y_raw) from customer activity in the next calendar month
 and construct training data from walk-forward windows.
 
 Conventions applied:
-  - 13-Data_ML §6.3: Data leakage prevention — labels from future H months only.
+  - 13-Data_ML §6.3: Data leakage prevention — labels from month T+1 only.
   - 13-Data_ML §9.1: Idempotent — same input → same output.
   - 13-Data_ML §9.2: Clear input/output boundaries.
 """
@@ -28,6 +28,15 @@ logger = logging.getLogger(__name__)
 # Regex to validate feature table names — prevents SQL injection
 # Format: data_window.cus_feature_{K}m_{YYMM}_{YYMM}
 _TABLE_NAME_PATTERN = re.compile(r"^data_window\.cus_feature_\d+m_\d{4}_\d{4}$")
+
+
+def _validate_next_month_horizon(horizon_months: int) -> None:
+    """Reject configurations that do not match the production target."""
+    if horizon_months != 1:
+        raise ValueError(
+            "horizon_months must be 1 for the next-month inactivity target, "
+            f"got {horizon_months}"
+        )
 
 
 def get_window_table_name(window_size: int, end_month: pd.Timestamp) -> str:
@@ -69,8 +78,26 @@ def load_window_features(
 
     try:
         with engine.connect() as conn:
-            df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+            df = pd.read_sql(f"SELECT * FROM {table_name}", conn)  # noqa: S608
+            lifetime_df = pd.read_sql(
+                """
+                SELECT *
+                FROM data_static.cus_lifetime_snapshot
+                WHERE snapshot_month = :snapshot_month
+                """,
+                conn,
+                params={"snapshot_month": end_month.to_period("M").to_timestamp()},
+            )
 
+        if lifetime_df.empty:
+            logger.warning("Lifetime snapshot missing for %s", end_month.strftime("%Y-%m"))
+            return pd.DataFrame()
+        df = df.merge(
+            lifetime_df.drop(columns=["snapshot_month"]),
+            on="cms_code_enc",
+            how="left",
+            validate="one_to_one",
+        )
         df["_window_table"] = table_name
         df["_W"] = window_size
         df["_end_month"] = end_month
@@ -93,20 +120,22 @@ def build_label(
     feature_end: pd.Timestamp,
     horizon_months: int,
 ) -> pd.DataFrame:
-    """Compute label (churn indicator) from customer activity in the horizon.
+    """Compute the next-month inactivity label.
 
     y=1 if customer has NEITHER items NOR revenue in
-    [feature_end + 1 month, feature_end + H months].
+    feature_end + 1 month.
 
     Args:
         engine: SQLAlchemy engine.
         feature_end: End of the feature window.
-        horizon_months: Number of months in the prediction horizon.
+        horizon_months: Must be 1 for the next-month inactivity target.
 
     Returns:
         DataFrame with ``cms_code_enc``, ``item_in_horizon``,
         ``rev_in_horizon`` columns.
     """
+    _validate_next_month_horizon(horizon_months)
+
     label_start = feature_end + pd.DateOffset(months=1)
     label_end = feature_end + pd.DateOffset(months=horizon_months)
 
@@ -146,20 +175,22 @@ def build_training_windows(
     """Build training rows for all windows of a given W.
 
     For each valid training window, loads features, computes EWMA,
-    and constructs the label from the horizon period.
+    and constructs the inactivity label from the next calendar month.
 
     Args:
         engine: SQLAlchemy engine.
         window_size: Window size W.
         all_months: All available months (DatetimeIndex).
-        horizon_months: Prediction horizon H.
+        horizon_months: Must be 1 for the next-month inactivity target.
         alpha_ewma: EWMA smoothing parameter.
         min_orders_in_w: Minimum orders in window to include a customer.
 
     Returns:
         Concatenated training DataFrame with features + ``y_raw``.
     """
-    # Training window ends: skip H months at the end (no label) + 1 (T_obs)
+    _validate_next_month_horizon(horizon_months)
+
+    # Training window ends: skip next month (no label) + 1 (T_obs)
     train_ends = all_months[window_size - 1 : -(horizon_months + 1)]
     logger.info("W=%d: %d training windows available", window_size, len(train_ends))
 
@@ -177,7 +208,7 @@ def build_training_windows(
         # Compute EWMA features
         feat_df = compute_ewma(feat_df, window_size, alpha_ewma)
 
-        # Build labels (y=1 if no items AND no revenue in horizon)
+        # Build labels (y=1 if no items AND no revenue in the next month)
         label_df = build_label(engine, end_month, horizon_months)
         feat_df = feat_df.merge(
             label_df[["cms_code_enc", "item_in_horizon", "rev_in_horizon"]],
@@ -187,6 +218,7 @@ def build_training_windows(
         feat_df["item_in_horizon"] = feat_df["item_in_horizon"].fillna(0)
         feat_df["rev_in_horizon"] = feat_df["rev_in_horizon"].fillna(0)
         feat_df["y_raw"] = ((feat_df["item_in_horizon"] == 0) & (feat_df["rev_in_horizon"] == 0)).astype(int)
+        feat_df["label_source"] = "rule_based"
 
         all_rows.append(feat_df)
 

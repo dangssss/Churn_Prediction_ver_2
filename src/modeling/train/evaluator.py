@@ -12,6 +12,7 @@ import numpy as np
 import xgboost as xgb
 from sklearn.metrics import (
     average_precision_score,
+    confusion_matrix,
     f1_score,
     fbeta_score,
     precision_recall_curve,
@@ -40,6 +41,11 @@ def best_threshold_by_fbeta(
     Returns:
         Optimal threshold value.
     """
+    if not np.any(y_true == 1):
+        return 1.0
+    if not np.any(y_true == 0):
+        return float(np.min(y_prob))
+
     prec, rec, thresholds = precision_recall_curve(y_true, y_prob)
     beta_sq = beta**2
     f_scores = (1 + beta_sq) * (prec[:-1] * rec[:-1]) / ((beta_sq * prec[:-1]) + rec[:-1] + 1e-9)
@@ -66,11 +72,34 @@ def evaluate_model(
     y_prob = model.predict(deval)
     y_true = ds.y_eval.values.astype(int)
 
-    threshold = best_threshold_by_fbeta(y_true, y_prob, beta=0.5)
+    metrics = evaluate_predictions(y_true, y_prob)
+
+    logger.info(
+        "Eval metrics: F1=%.4f, F0.5(Precision-focus)=%.4f, PR-AUC=%.4f, threshold=%.4f (%d pos / %d neg)",
+        metrics["f1"],
+        metrics["f05"],
+        metrics["pr_auc"],
+        metrics["threshold"],
+        metrics["n_pos"],
+        metrics["n_neg"],
+    )
+    return metrics
+
+
+def evaluate_predictions(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    *,
+    threshold: float | None = None,
+) -> dict:
+    """Compute canonical metrics for one binary prediction slice."""
+    if threshold is None:
+        threshold = best_threshold_by_fbeta(y_true, y_prob, beta=0.5)
     y_pred = (y_prob >= threshold).astype(int)
 
     n_pos = int((y_true == 1).sum())
     n_neg = int((y_true == 0).sum())
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
 
     metrics = {
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
@@ -83,15 +112,11 @@ def evaluate_model(
         "n_eval": len(y_true),
         "n_pos": n_pos,
         "n_neg": n_neg,
+        "confusion_matrix": {
+            "tn": int(tn),
+            "fp": int(fp),
+            "fn": int(fn),
+            "tp": int(tp),
+        },
     }
-
-    logger.info(
-        "Eval metrics: F1=%.4f, F0.5(Precision-focus)=%.4f, PR-AUC=%.4f, threshold=%.4f (%d pos / %d neg)",
-        metrics["f1"],
-        metrics["f05"],
-        metrics["pr_auc"],
-        metrics["threshold"],
-        n_pos,
-        n_neg,
-    )
     return metrics

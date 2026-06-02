@@ -12,10 +12,12 @@ Conventions applied:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
+
+from data.preprocessing.dataset_prep.label_calibration import LabelWeights
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,7 @@ class DatasetResult:
         scaler: Fitted StandardScaler (for inference reuse).
         feature_names: List of feature column names.
         active_df: Full active DataFrame with all metadata.
+        calibration: Data-driven pseudo-label thresholds and source weights.
     """
 
     x_train: pd.DataFrame
@@ -45,11 +48,13 @@ class DatasetResult:
     scaler: StandardScaler
     feature_names: list[str]
     active_df: pd.DataFrame
+    calibration: dict[str, float] = field(default_factory=dict)
+    eval_metadata: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def apply_weights_and_smoothing(
     df: pd.DataFrame,
-    pu_weight_c: float,
+    label_weights: LabelWeights,
     label_smooth_eps_confirmed: float,
     label_smooth_eps_pseudo: float,
 ) -> pd.DataFrame:
@@ -57,7 +62,7 @@ def apply_weights_and_smoothing(
 
     Args:
         df: DataFrame with ``label_source`` column.
-        pu_weight_c: PU learning weight for unlabeled samples.
+        label_weights: Calibrated source-aware sample weights.
         label_smooth_eps_confirmed: Smoothing epsilon for confirmed.
         label_smooth_eps_pseudo: Smoothing epsilon for pseudo/unlabeled.
 
@@ -77,10 +82,10 @@ def apply_weights_and_smoothing(
 
     # Sample weights
     weight_map = {
-        "confirmed": 1.0,
-        "pseudo_churn": 0.50,
-        "reliable_neg": 0.80,
-        "pu_unlabeled": pu_weight_c,
+        "confirmed": label_weights.confirmed,
+        "pseudo_churn": label_weights.pseudo_churn,
+        "reliable_neg": label_weights.reliable_neg,
+        "pu_unlabeled": label_weights.pu_unlabeled,
     }
     result["sample_weight"] = result["label_source"].map(weight_map)
 
@@ -100,8 +105,11 @@ def apply_weights_and_smoothing(
 def build_final_dataset(
     active_df: pd.DataFrame,
     training_history_df: pd.DataFrame,
+    holdout_df: pd.DataFrame,
     eval_ids: set[str],
     feature_names: list[str],
+    label_weights: LabelWeights,
+    calibration: dict[str, float] | None = None,
 ) -> DatasetResult:
     """Build the final train/eval/predict datasets with scaling.
 
@@ -110,48 +118,48 @@ def build_final_dataset(
     Args:
         active_df: DataFrame with ``y_smooth``, ``y_label``,
             ``sample_weight``, ``cms_code_enc`` columns.
-        eval_ids: Confirmed churn IDs (used for eval split).
+        holdout_df: Actual-label temporal holdout rows.
+        eval_ids: Confirmed churn IDs reserved from training.
         feature_names: List of numeric feature columns.
+        label_weights: Calibrated source-aware sample weights.
+        calibration: Data-driven thresholds and weights for audit metadata.
 
     Returns:
         DatasetResult containing all splits and the fitted scaler.
     """
-    from sklearn.model_selection import train_test_split
-
     feats = [f for f in feature_names if f in active_df.columns]
 
-    # PU Learning Architecture:
-    # 1. Confirmed churners MUST NEVER be used in training (strictly hold-out)
-    is_confirmed = active_df["cms_code_enc"].isin(eval_ids)
-
-    # 2. Split the unlabeled/pseudo-labeled data (80% Train, 20% Eval) to provide negatives for evaluation
-    unlabeled_df = active_df[~is_confirmed]
-    _, eval_unlabeled_df = train_test_split(
-        unlabeled_df, test_size=0.2, random_state=42, stratify=unlabeled_df["y_label"]
-    )
-    is_eval_unlabeled = active_df.index.isin(eval_unlabeled_df.index)
-
-    # Train: 80% Unlabeled (Pseudo-churn, Reliable-neg, PU)
-    train_mask = ~(is_confirmed | is_eval_unlabeled)
-    # Eval: 100% Confirmed + 20% Unlabeled (as assumed negatives)
-    eval_mask = is_confirmed | is_eval_unlabeled
+    # Latest confirmed cohort is a strict temporal holdout.
+    train_mask = ~active_df["cms_code_enc"].isin(eval_ids)
 
     x_train_active = active_df.loc[train_mask, feats].fillna(0)
     y_train_active = active_df.loc[train_mask, "y_smooth"]
     w_train_active = active_df.loc[train_mask, "sample_weight"]
 
-    # Historical data: y=1 if confirmed OR y_raw == 1
+    # Historical labels are computed from each window's own next-month outcome.
+    # Current CSKH confirmations must not overwrite past labels.
     if not training_history_df.empty:
-        is_hist_confirmed = training_history_df["cms_code_enc"].isin(eval_ids)
-        y_train_hist = (is_hist_confirmed | (training_history_df["y_raw"] == 1)).astype(float)
-        w_train_hist = pd.Series(1.0, index=training_history_df.index)
+        history_df = training_history_df[
+            ~training_history_df["cms_code_enc"].isin(eval_ids)
+        ].copy()
+        history_sources = history_df.get(
+            "label_source",
+            pd.Series("rule_based", index=history_df.index),
+        )
+        y_train_hist = (history_df["y_raw"] == 1).astype(float)
+        w_train_hist = history_sources.map(
+            {
+                "confirmed": label_weights.confirmed,
+                "rule_based": label_weights.rule_based,
+            }
+        ).fillna(label_weights.rule_based)
 
         # Ensure only available features are used and missing filled with 0
-        missing_feats = [f for f in feats if f not in training_history_df.columns]
+        missing_feats = [f for f in feats if f not in history_df.columns]
         for f in missing_feats:
-            training_history_df[f] = 0.0
+            history_df[f] = 0.0
 
-        x_train_hist = training_history_df[feats].fillna(0)
+        x_train_hist = history_df[feats].fillna(0)
 
         x_train_raw = pd.concat([x_train_active, x_train_hist], ignore_index=True)
         y_train = pd.concat([y_train_active, y_train_hist], ignore_index=True)
@@ -167,13 +175,19 @@ def build_final_dataset(
         y_train = y_train_active
         w_train = w_train_active
 
-    x_eval_raw = active_df.loc[eval_mask, feats].fillna(0)
-    y_eval = active_df.loc[eval_mask, "y_label"]  # No smoothing for GT
+    x_eval_raw = holdout_df.reindex(columns=feats, fill_value=0).fillna(0)
+    y_eval = holdout_df.get("y_label", pd.Series(dtype=float))
+    eval_metadata = holdout_df.reindex(
+        columns=["cms_code_enc", "_confirmed_label_yymm", "label_source"],
+    ).reset_index(drop=True)
 
     # Fit scaler on train set ONLY (prevent data leakage)
     scaler = StandardScaler()
     x_train = pd.DataFrame(scaler.fit_transform(x_train_raw), columns=feats, index=x_train_raw.index)
-    x_eval = pd.DataFrame(scaler.transform(x_eval_raw), columns=feats, index=x_eval_raw.index)
+    if x_eval_raw.empty:
+        x_eval = pd.DataFrame(columns=feats, index=x_eval_raw.index)
+    else:
+        x_eval = pd.DataFrame(scaler.transform(x_eval_raw), columns=feats, index=x_eval_raw.index)
     x_predict = pd.DataFrame(
         scaler.transform(active_df[feats].fillna(0)),
         columns=feats,
@@ -203,4 +217,6 @@ def build_final_dataset(
         scaler=scaler,
         feature_names=feats,
         active_df=active_df,
+        calibration=calibration or {},
+        eval_metadata=eval_metadata,
     )

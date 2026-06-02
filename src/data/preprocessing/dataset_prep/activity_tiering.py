@@ -104,6 +104,7 @@ def compute_recency(
                 AS recency_days
         FROM public.cas_customer
         WHERE report_month >= :data_start
+          AND report_month < :t_obs
         GROUP BY cms_code_enc
     """)
 

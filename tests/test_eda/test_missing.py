@@ -28,7 +28,7 @@ class TestComputeMissingStats:
     def test_should_detect_inf_values_when_present(self) -> None:
         df = pd.DataFrame({"x": [1.0, np.inf, -np.inf, 4.0]})
         result = compute_missing_stats(df, ["x"])
-        assert result.iloc[0]["has_inf"] is True
+        assert bool(result.iloc[0]["has_inf"]) is True
 
     def test_should_count_partial_nulls(
         self, sample_df: pd.DataFrame, sample_feature_cols: list[str],

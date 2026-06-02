@@ -25,7 +25,7 @@ INCOMING_RETENTION_DAYS=${INCOMING_RETENTION_DAYS:-7}
 # CÁC ĐƯỜNG DẪN CHUẨN TRONG DOCKER CONTAINER
 BUNDLE_DIR="${CHURN_MODEL_DIR}/bundles"
 LOG_DIR="/opt/airflow/logs"
-DATA_ROOT="/churn_data"
+DATA_ROOT="/data"
 
 echo "=== DS_CHURN Housekeeping - $(date) ==="
 
@@ -102,15 +102,15 @@ with DAG(
     # Imports moved to module top per Convention 04 §4.1
 
     # Note: For logs sweeping, Airflow logs might be on a different PVC (or not needed locally if ephemeral pod)
-    # But we mount /churn_data PVC to sweep bundles, saved, failed data.
+    # But we mount /data PVC to sweep bundles, saved, failed data.
     volume = k8s.V1Volume(
         name="churn-data-mount",
         # prod: path="/data/churn_prediction/ftp_churn"
-        host_path=k8s.V1HostPathVolumeSource(path="/churn_data")
+        host_path=k8s.V1HostPathVolumeSource(path="/data")
     )
     volume_mount = k8s.V1VolumeMount(
         name="churn-data-mount",
-        mount_path="/churn_data",
+        mount_path="/data",
         sub_path=None,
         read_only=False
     )

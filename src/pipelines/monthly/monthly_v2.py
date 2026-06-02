@@ -74,7 +74,8 @@ def run_monthly_v2(
     model_config.validate()
 
     if bundle_dir is None:
-        from modeling.config.paths import CHURN_MODEL_DIR  # Lazy: avoid import at module level when env var may not be set yet
+        # Lazy import: the environment-backed model path may not be ready at module import time.
+        from modeling.config.paths import CHURN_MODEL_DIR
 
         bundle_dir = CHURN_MODEL_DIR / "bundles" / "latest"
     bundle_dir = Path(bundle_dir)
@@ -102,6 +103,43 @@ def run_monthly_v2(
             len(ds.x_predict),
             len(ds.feature_names),
         )
+        if ds.x_eval.empty or ds.y_eval.nunique() < 2:
+            logger.warning(
+                "No complete temporal holdout available; skipping retrain and scoring with the latest accepted bundle"
+            )
+            scoring_model, metadata = load_bundle(bundle_dir)
+            threshold = float(metadata.get("metrics", {}).get("threshold", 0.5))
+            risk_top_percentile = float(
+                metadata.get("model_config", {}).get(
+                    "risk_top_percentile",
+                    model_config.risk_top_percentile,
+                )
+            )
+            risk_max_customers = int(
+                metadata.get("model_config", {}).get(
+                    "risk_max_customers",
+                    model_config.risk_max_customers,
+                )
+            )
+            score_stats, n_inserted = _score_and_export(
+                engine,
+                scoring_model,
+                ds,
+                threshold=threshold,
+                horizon=horizon,
+                risk_top_percentile=risk_top_percentile,
+                risk_max_customers=risk_max_customers,
+            )
+            summary.update(
+                {
+                    "status": "success",
+                    "mode": "scoring_only_no_holdout",
+                    "did_retrain": False,
+                    "score_stats": score_stats,
+                    "n_inserted": n_inserted,
+                }
+            )
+            return summary
 
         # ── Step 2: Train XGBoost ─────────────────────────
         logger.info("=" * 70)
@@ -120,8 +158,9 @@ def run_monthly_v2(
         logger.info("STEP 4/8: Guardrail check")
         passed, guardrail_msg = check_guardrail(
             metrics,
-            min_f05=model_config.min_f1,  # use legacy config attribute for F0.5
+            min_f05=model_config.min_f05,
             min_pr_auc=model_config.min_pr_auc,
+            min_recall=model_config.min_recall,
         )
         summary["guardrail_passed"] = passed
         summary["guardrail_msg"] = guardrail_msg
@@ -138,7 +177,7 @@ def run_monthly_v2(
         prev_f05 = None
         try:
             prev_cfg = load_latest_accepted_best_config(engine, horizon=horizon)
-            prev_f05 = float(prev_cfg.get("metric_f1_val", 0))  # read legacy column
+            prev_f05 = float(prev_cfg.get("metric_f05_val", 0))
         except ValueError:
             logger.info("No previous accepted model found for horizon=%s. Using baseline logic.", horizon)
         except Exception as e:
@@ -147,7 +186,7 @@ def run_monthly_v2(
         accepted, rule = check_accept_reject(
             metrics["f05"],
             prev_f05,
-            eps=model_config.f1_improve_eps,
+            eps=model_config.f05_improve_eps,
         )
         summary["accepted"] = accepted
         summary["accept_rule"] = rule
@@ -164,13 +203,13 @@ def run_monthly_v2(
             "use_static": True,
             "best_threshold": metrics["threshold"],
             "best_spw": 1.0,
-            "metric_f1_val": metrics["f05"],  # Store F0.5 in legacy F1 column
+            "metric_f05_val": metrics["f05"],
             "metric_pr_auc_val": metrics["pr_auc"],
             "val_month": None,
             "target_month": None,
             "is_accepted": accepted,
             "accept_rule": rule,
-            "prev_accepted_f1": prev_f05,
+            "prev_accepted_f05": prev_f05,
             "accepted_at": pd.Timestamp.utcnow().isoformat(),
             "notes": f"v2 pipeline; features={len(ds.feature_names)}",
         }
@@ -188,6 +227,7 @@ def run_monthly_v2(
                 "metrics": metrics,
                 "feature_names": ds.feature_names,
                 "feature_importance": feat_importance,
+                "calibration": ds.calibration,
             }
             save_bundle(bundle_dir, model, metadata=meta)
             logger.info("Bundle saved to %s", bundle_dir)
@@ -210,21 +250,20 @@ def run_monthly_v2(
                 scoring_model = model
 
         threshold = metrics["threshold"]
-        scored_df = score_all(scoring_model, ds, threshold)
-        scored_df = compute_reasons(scored_df, scoring_model, top_n=3)
-        score_stats = compute_score_stats(scored_df)
+        score_stats, n_inserted = _score_and_export(
+            engine,
+            scoring_model,
+            ds,
+            threshold=threshold,
+            horizon=horizon,
+            risk_top_percentile=model_config.risk_top_percentile,
+            risk_max_customers=model_config.risk_max_customers,
+        )
         summary["score_stats"] = score_stats
 
         # ── Step 8: Export to risk table ──────────────────
         logger.info("=" * 70)
         logger.info("STEP 8/8: Export risk predictions")
-        n_inserted = insert_predictions(
-            engine,
-            scored_df,
-            threshold=threshold,
-            w_star=None,  # Deferred: w_star not yet tracked in v2 pipeline artifacts (non-blocking)
-            horizon=horizon,
-        )
         summary["n_inserted"] = n_inserted
         summary["status"] = "success"
 
@@ -247,3 +286,33 @@ def run_monthly_v2(
         raise
 
     return summary
+
+
+def _score_and_export(
+    engine: Engine,
+    model,
+    ds,
+    *,
+    threshold: float,
+    horizon: int,
+    risk_top_percentile: float,
+    risk_max_customers: int,
+) -> tuple[dict, int]:
+    """Score active accounts and persist the current risk list."""
+    scored_df = score_all(
+        model,
+        ds,
+        threshold,
+        top_percentile=risk_top_percentile,
+        max_customers=risk_max_customers,
+    )
+    scored_df = compute_reasons(scored_df, model, top_n=3)
+    score_stats = compute_score_stats(scored_df)
+    n_inserted = insert_predictions(
+        engine,
+        scored_df,
+        threshold=float(score_stats.get("effective_threshold") or threshold),
+        w_star=None,  # Deferred: w_star is not yet tracked in dataset artifacts.
+        horizon=horizon,
+    )
+    return score_stats, n_inserted

@@ -15,7 +15,7 @@ Muc tieu cua tai lieu nay la so sanh logic tong the, khong chi so sanh diff file
 | Kien truc | Tach thanh 3 source tree: `ingestion`, `preprocessing`, `modeling`; Airflow goi BashOperator truc tiep. | Gom thanh modular monolith `src/{data,features,modeling,monitoring,pipelines}`; Airflow chay KubernetesPodOperator. | Giu kien truc v2. Chi migrate logic thuc chien tu v1. |
 | Ingestion | Logic ZIP/CSV/Data_pull kha day du, co naming, unzip, copy, maintenance. | Da duoc dua vao `src/data/ingestion`, co test cho ingest job/log repo. | Thap. Kiem tra patch production neu co khac biet nho. |
 | Feature generation | Lifetime + sliding window; co chunk checkpoint, skip/recompute table rong, recompute last N, resume. | Lifetime + sliding window; co staging UNLOGGED, incremental skip existing, parallel insert. | Cao. Nen merge checkpoint/recompute-empty cua v1 vao engine v2. |
-| Dataset/label | Label da tin hieu C0/C1/C2/C3 tren future table; active gating; outlier clipping. | Label chinh thuc `no item AND no revenue trong horizon`; them CSKH, prototype, pseudo-label, PU learning. | Cao nhung can chon ky. v1 label co the tang recall, v2 label sach hon. |
+| Dataset/label | Label da tin hieu C0/C1/C2/C3 tren future table; active gating; outlier clipping. | Label chinh thuc `no item AND no revenue` trong dung thang `T+1`; them CSKH, prototype, pseudo-label, PU learning. | Cao nhung can chon ky. v1 label co the tang recall, v2 label sach hon. |
 | Window search | Sweep K tat ca bang available, dung Logistic Regression baseline de chon `best_k`. | Walk-forward W* search trong dataset prep. | Trung binh. Nen tham khao guard/ablation cua v1, khong copy y nguyen. |
 | Training | XGBClassifier, native categorical fallback one-hot, 5000 estimators, learning rate 0.01, sanity guardrail. | xgb.train Booster, numeric scaled features, PU sample weights, 500 rounds, learning rate 0.05. | Cao. Nen migrate sanity guardrails va metadata compatibility. |
 | Accept/retrain | Co mandatory retrain moi 3 thang, prevalence guard, active-count guard, DB vs bundle F1 cross-check. | Guardrail F0.5/PR-AUC, accept neu F0.5 cai thien, reject van score bang model cu. | Rat cao. Nen migrate cac guard thuc chien cua v1. |
@@ -126,7 +126,7 @@ Day la cum logic v1 dang gia nhat de tich hop sang v2.
 
 | Noi dung | v1 | v2 | Khuyen nghi |
 |---|---|---|---|
-| Threshold | Config `risk_threshold_pct=95`, filter `churn_rate >= 95`. | `score_all` dung max(eval threshold, top 10% percentile). | Can chon lai theo yeu cau CSKH: fixed high threshold hay top N%. |
+| Threshold | Config `risk_threshold_pct=95`, filter `churn_rate >= 95`. | `score_all` dung max(eval threshold, dynamic `risk_top_percentile`) va cap van hanh `risk_max_customers=5000`. | Tune percentile theo du lieu; cap danh sach theo nang luc xu ly cua CSKH. |
 | Output DB | `data_static.cus_risk_{pct}` va `_hist` cho backtest. | `data_static.churn_risk_predictions`. | Neu downstream CSKH dang doc v1 table, can migrate compatibility view/table. |
 | Output CSV | V1 xuat `churn_predict_update_YYMMDD.csv`. | V2 chua thay xuat CSV. | Neu production dang can CSV, migrate. |
 | Feature mismatch scoring | V1 neu DB config K khac bundle K, dung K trong bundle; pad missing features. | V2 scoring dua vao `DatasetResult` cung run, reject thi load model cu nhung features co the khong khop neu W/feature set khac. | Rat nen migrate compatibility check. |
@@ -161,8 +161,8 @@ Day la cum logic v1 dang gia nhat de tich hop sang v2.
 
 | Muc | Van de | Anh huong | De xuat |
 |---|---|---|---|
-| Config naming | `run_monthly_v2` goi `model_config.min_f1`, `min_pr_auc`, `f1_improve_eps`, nhung `ModelConfig` hien co `min_f2`, `min_roc_auc`, `f2_improve_eps`. | Co nguy co runtime `AttributeError` khi chay monthly v2. | Doi `ModelConfig` sang ten F0.5/PR-AUC dung README, hoac sua monthly_v2 ve field hien co. |
-| Guardrail tests | Tests dang goi `check_guardrail(..., min_f2=..., min_roc_auc=...)`, trong khi function nhan `min_f05`, `min_pr_auc`. | Test suite co nguy co fail hoac lech doc/code. | Chuan hoa metric naming: `f05`, `min_f05`, `min_pr_auc`. |
+| Config naming | Da chuan hoa `ModelConfig` va `run_monthly_v2` sang `min_f05`, `min_pr_auc`, `min_recall`, `f05_improve_eps`. | Da xu ly. | Giu contract F0.5/PR-AUC; khong khoi phuc field F2 legacy. |
+| Guardrail tests | Da chuan hoa tests theo F0.5, PR-AUC va recall floor. | Da xu ly. | Full pytest suite phai tiep tuc pass truoc khi train that. |
 | Scoring reject old model | V2 reject thi load old bundle, nhung `DatasetResult` moi co the khac feature set/scaler voi old model. | Risk scoring fail hoac score sai neu feature_names mismatch. | Migrate v1 logic bundle metadata K/feature compatibility, pad missing, hoac luu full preprocessing artifact trong bundle. |
 | Reasons | Reason v2 chua dung cho CSKH. | Output kho giai thich cho nguoi dung cuoi. | Migrate SHAP/rule reason v1. |
 | Monitoring not wired | V2 co module nhung pipeline monthly chua day du run log/drift/backtest. | Mat observability production. | Migrate orchestration v1. |

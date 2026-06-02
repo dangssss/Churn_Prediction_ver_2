@@ -15,6 +15,9 @@ from typing import Any
 
 import pandas as pd
 
+from data.preprocessing.dataset_prep.label_calibration import (
+    PseudoLabelThresholds,
+)
 from data.preprocessing.dataset_prep.leading_prototype import (
     compute_similarity,
 )
@@ -26,9 +29,9 @@ def assign_pseudo_labels(
     active_df: pd.DataFrame,
     prototype: dict[str, Any],
     eval_ids: set[str],
-    sim_threshold: float,
-    recency_reliable_neg: int,
-    trend_down_ratio: float = 0.85,
+    thresholds: PseudoLabelThresholds,
+    *,
+    sim_scores: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Assign pseudo-labels to active-tier accounts.
 
@@ -43,10 +46,8 @@ def assign_pseudo_labels(
             delta_ewma, recency_days, item_avg, item_last columns).
         prototype: Prototype dict from ``build_leading_prototype``.
         eval_ids: Set of confirmed churn CMS codes.
-        sim_threshold: Threshold for similarity-based pseudo-churn.
-        recency_reliable_neg: Max recency_days for reliable negative.
-        trend_down_ratio: Ratio threshold for trend_down condition
-            (item_last < item_avg * ratio). Default 0.85.
+        thresholds: Data-driven pseudo-label thresholds.
+        sim_scores: Optional precomputed similarity scores.
 
     Returns:
         DataFrame with ``sim_score``, ``label_source`` columns added.
@@ -54,22 +55,24 @@ def assign_pseudo_labels(
     result = active_df.copy()
 
     # Compute similarity scores
-    result["sim_score"] = compute_similarity(result, prototype)
+    result["sim_score"] = sim_scores if sim_scores is not None else compute_similarity(result, prototype)
 
     # ── Pseudo-churn conditions ────────────────────────────
-    sim_high = result["sim_score"] > sim_threshold
+    sim_high = result["sim_score"] > thresholds.sim_threshold
     ewma_down = result["delta_ewma"] < 0
 
-    # Trend down: item_last < trend_down_ratio * item_avg
+    # Trend down: item_last < calibrated ratio * item_avg
     if "item_last" in result.columns:
-        trend_down = (result["item_avg"] > 0) & (result["item_last"] < result["item_avg"] * trend_down_ratio)
+        trend_down = (result["item_avg"] > 0) & (
+            result["item_last"] < result["item_avg"] * thresholds.trend_down_ratio
+        )
     else:
         trend_down = ewma_down
 
     pseudo_churn = sim_high & ewma_down & trend_down
 
     # ── Reliable negative conditions ──────────────────────
-    reliable_neg = (result["recency_days"] <= recency_reliable_neg) & (result["delta_ewma"] >= 0)
+    reliable_neg = (result["recency_days"] <= thresholds.recency_reliable_neg) & (result["delta_ewma"] >= 0)
 
     # ── Assign labels ─────────────────────────────────────
     result["label_source"] = "pu_unlabeled"

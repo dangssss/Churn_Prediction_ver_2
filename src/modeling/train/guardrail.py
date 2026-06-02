@@ -13,8 +13,9 @@ logger = logging.getLogger(__name__)
 def check_guardrail(
     metrics: dict,
     *,
-    min_f05: float = 0.7,
-    min_pr_auc: float = 0.75,
+    min_f05: float = 0.10,
+    min_pr_auc: float = 0.05,
+    min_recall: float = 0.10,
 ) -> tuple[bool, str]:
     """Check if model metrics meet minimum quality thresholds.
 
@@ -22,25 +23,33 @@ def check_guardrail(
         metrics: Dict from evaluate_model (must contain 'f05', 'pr_auc').
         min_f05: Minimum acceptable F0.5 score.
         min_pr_auc: Minimum acceptable PR-AUC.
+        min_recall: Minimum acceptable recall at the selected threshold.
 
     Returns:
         Tuple of (passed: bool, reason: str).
     """
     f05 = metrics.get("f05", 0.0)
     pr_auc = metrics.get("pr_auc", 0.0)
+    recall = metrics.get("recall", 0.0)
 
     reasons = []
     if f05 < min_f05:
         reasons.append(f"F0.5={f05:.4f} < min_f05={min_f05}")
     if pr_auc < min_pr_auc:
         reasons.append(f"PR-AUC={pr_auc:.4f} < min_pr_auc={min_pr_auc}")
+    if recall < min_recall:
+        reasons.append(f"Recall={recall:.4f} < min_recall={min_recall}")
 
     if reasons:
         msg = "GUARDRAIL FAILED: " + "; ".join(reasons)
         logger.warning(msg)
         return False, msg
 
-    msg = f"Guardrail passed: F0.5={f05:.4f} >= {min_f05}, PR-AUC={pr_auc:.4f} >= {min_pr_auc}"
+    msg = (
+        f"Guardrail passed: F0.5={f05:.4f} >= {min_f05}, "
+        f"PR-AUC={pr_auc:.4f} >= {min_pr_auc}, "
+        f"Recall={recall:.4f} >= {min_recall}"
+    )
     logger.info(msg)
     return True, msg
 

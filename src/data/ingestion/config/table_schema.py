@@ -13,15 +13,15 @@ Bao gồm:
 # ============================================================
 BCCP_ORDERITEM_COLUMNS: list[tuple[str, str, int]] = [
     # (column_name, data_type, position)
-    ("crm_code_enc", "VARCHAR(20)", 1),
-    ("cms_code_enc", "VARCHAR(20)", 2),
-    ("item_code", "VARCHAR(20)", 3),
+    ("crm_code_enc", "VARCHAR(100)", 1),
+    ("cms_code_enc", "VARCHAR(100)", 2),
+    ("item_code", "VARCHAR(100)", 3),
     ("service_code", "VARCHAR(10)", 4),
     ("weight_kg", "DECIMAL(10,3)", 5),
     ("length_size", "INT", 6),
     ("width_size", "INT", 7),
     ("height_size", "INT", 8),
-    ("total_fee", "INT", 9),
+    ("total_fee", "BIGINT", 9),
     ("is_domestic", "INT", 10),
     ("country_code", "VARCHAR(20)", 11),
     ("send_province_code", "INT", 12),
@@ -31,8 +31,8 @@ BCCP_ORDERITEM_COLUMNS: list[tuple[str, str, int]] = [
     ("rec_district_code", "INT", 16),
     ("rec_commune_code", "INT", 17),
     ("region", "VARCHAR(20)", 18),
-    ("sending_time", "DATETIME", 19),
-    ("ending_time", "DATETIME", 20),
+    ("sending_time", "TIMESTAMP", 19),
+    ("ending_time", "TIMESTAMP", 20),
     ("rec_success", "INT", 21),
     ("refunded", "INT", 22),
     ("no_accepted", "INT", 23),
@@ -55,30 +55,31 @@ BCCP_ORDERITEM_COLUMNS: list[tuple[str, str, int]] = [
     ("complaint234", "INT", 40),
     ("complaint174", "INT", 41),
     ("order_score", "DECIMAL(10,3)", 42),
-    ("bccp_update_date", "DATETIME", 43),
+    ("bccp_update_date", "TIMESTAMP", 43),
 ]
 
 # ============================================================
 # CMS_COMPLAINT Schema
 # ============================================================
 CMS_COMPLAINT_COLUMNS: list[tuple[str, str, int]] = [
-    ("cms_code_enc", "VARCHAR(20)", 1),
-    ("item_code", "VARCHAR(20)", 2),
-    ("create_complaint_date", "DATETIME", 3),
-    ("exp_complaint_date", "DATETIME", 4),
-    ("close_complaint_date", "DATETIME", 5),
+    ("cms_code_enc", "VARCHAR(100)", 1),
+    ("item_code", "VARCHAR(100)", 2),
+    ("create_complaint_date", "TIMESTAMP", 3),
+    ("exp_complaint_date", "TIMESTAMP", 4),
+    ("close_complaint_date", "TIMESTAMP", 5),
     ("delay_complaint", "INT", 6),
     ("complaint_code", "INT", 7),
     ("complaint_content", "TEXT", 8),
     ("complaint_content_bit", "INT", 9),
-    ("complaint_update_date", "DATETIME", 10),
+    ("complaint_update_date", "TIMESTAMP", 10),
+    ("etl_date", "TIMESTAMP", 11),
 ]
 
 # ============================================================
 # CAS_CUSTOMER Schema
 # ============================================================
 CAS_CUSTOMER_COLUMNS: list[tuple[str, str, int]] = [
-    ("cms_code_enc", "VARCHAR(20)", 1),
+    ("cms_code_enc", "VARCHAR(100)", 1),
     ("report_month", "DATE", 2),  # YYYY-MM-DD format
     ("item_count", "BIGINT", 3),
     ("weight_kg", "DECIMAL(12,3)", 4),
@@ -119,24 +120,24 @@ CAS_CUSTOMER_COLUMNS: list[tuple[str, str, int]] = [
     ("complaint654", "INT", 39),
     ("complaint234", "INT", 40),
     ("complaint174", "INT", 41),
-    ("updated_at", "DATETIME", 42),
+    ("updated_at", "TIMESTAMP", 42),
 ]
 
 # ============================================================
 # CAS_INFO Schema
 # ============================================================
 CAS_INFO_COLUMNS: list[tuple[str, str, int]] = [
-    ("cms_code_enc", "VARCHAR(20)", 1),
-    ("crm_code_enc", "VARCHAR(20)", 2),
+    ("cms_code_enc", "VARCHAR(100)", 1),
+    ("crm_code_enc", "VARCHAR(100)", 2),
     ("cus_province", "INT", 3),
     ("contract_service", "INT", 4),
-    ("contract_sig_first", "DATETIME", 5),
+    ("contract_sig_first", "TIMESTAMP", 5),
     ("tenure", "INT", 6),
     ("custype", "INT", 7),
     ("contract_classify", "INT", 8),
     ("contract_mgr_org", "INT", 9),
     ("cus_poscode", "INT", 10),
-    ("customer_update_date", "DATETIME", 11),
+    ("customer_update_date", "TIMESTAMP", 11),
 ]
 
 # ============================================================

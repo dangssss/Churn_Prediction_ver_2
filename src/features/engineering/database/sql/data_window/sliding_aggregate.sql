@@ -146,16 +146,53 @@ complaint_stats AS (
     GROUP BY cms_code_enc
 ),
 
--- BCCP activity (from staging table)
-bccp_stats AS (
-    SELECT
+-- BCCP activity dates (from staging table)
+bccp_active_dates AS (
+    SELECT DISTINCT
         cms_code_enc,
-        COUNT(DISTINCT send_date)::int AS active_days,
-        (DATE '{END_DATE}'::date - DATE '{START_DATE}'::date + 1)::int AS window_days,
-        (MAX(send_date) - DATE '{START_DATE}'::date + 1)::int AS recency_days
+        send_date
     FROM data_window._stg_bccp
     WHERE send_date >= DATE '{START_DATE}' AND send_date <= DATE '{END_DATE}'
+),
+
+-- Include leading, internal, and trailing no-service gaps inside the window.
+bccp_inactive_spans AS (
+    SELECT
+        cms_code_enc,
+        (send_date - LAG(send_date, 1, DATE '{START_DATE}' - 1)
+            OVER (PARTITION BY cms_code_enc ORDER BY send_date) - 1)::int AS no_service_days
+    FROM bccp_active_dates
+
+    UNION ALL
+
+    SELECT
+        cms_code_enc,
+        (DATE '{END_DATE}' - MAX(send_date))::int AS no_service_days
+    FROM bccp_active_dates
     GROUP BY cms_code_enc
+),
+
+bccp_inactive_stats AS (
+    SELECT
+        cms_code_enc,
+        COALESCE(AVG(no_service_days) FILTER (WHERE no_service_days > 0), 0)::double precision
+            AS avg_noservice_days,
+        COALESCE(MAX(no_service_days), 0)::int AS max_consecutive_inactive
+    FROM bccp_inactive_spans
+    GROUP BY cms_code_enc
+),
+
+bccp_stats AS (
+    SELECT
+        ad.cms_code_enc,
+        COUNT(*)::int AS active_days,
+        (DATE '{END_DATE}'::date - DATE '{START_DATE}'::date + 1)::int AS window_days,
+        (MAX(ad.send_date) - DATE '{START_DATE}'::date + 1)::int AS recency_days,
+        ins.avg_noservice_days,
+        ins.max_consecutive_inactive
+    FROM bccp_active_dates ad
+    JOIN bccp_inactive_stats ins ON ins.cms_code_enc = ad.cms_code_enc
+    GROUP BY ad.cms_code_enc, ins.avg_noservice_days, ins.max_consecutive_inactive
 ),
 
 -- Slopes (from monthly_sums — no re-scan of raw data)
@@ -236,9 +273,8 @@ SELECT
     ({WINDOW_SIZE} - b.active_months)::int,
     COALESCE(bs.active_days, 0),
     ((DATE '{END_DATE}' - DATE '{START_DATE}' + 1) - COALESCE(bs.active_days, 0))::int,
-    (((DATE '{END_DATE}' - DATE '{START_DATE}' + 1) - COALESCE(bs.active_days, 0))::double precision /
-        GREATEST(CEIL((DATE '{END_DATE}' - DATE '{START_DATE}' + 1) / 30.0), 1))::double precision,
-    0::int,
+    COALESCE(bs.avg_noservice_days, (DATE '{END_DATE}' - DATE '{START_DATE}' + 1)::double precision),
+    COALESCE(bs.max_consecutive_inactive, (DATE '{END_DATE}' - DATE '{START_DATE}' + 1)::int),
     b.avg_lastday,
 
     -- Services
@@ -299,6 +335,11 @@ ON CONFLICT (cms_code_enc, window_size, window_start, window_end) DO UPDATE SET
     order_score_avg = EXCLUDED.order_score_avg,
     satisfaction_avg = EXCLUDED.satisfaction_avg,
     active_months = EXCLUDED.active_months,
+    inactive_months = EXCLUDED.inactive_months,
+    active_days = EXCLUDED.active_days,
+    inactive_days = EXCLUDED.inactive_days,
+    avg_noservice_days = EXCLUDED.avg_noservice_days,
+    max_consecutive_inactive = EXCLUDED.max_consecutive_inactive,
     recency = EXCLUDED.recency,
     frequency = EXCLUDED.frequency,
     monetary = EXCLUDED.monetary;

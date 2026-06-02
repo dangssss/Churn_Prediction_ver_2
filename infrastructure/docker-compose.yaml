@@ -52,7 +52,7 @@ x-airflow-common:
   image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:3.1.7}
   # build: .
   env_file:
-    - ${ENV_FILE_PATH:-.env}
+    - ${ENV_FILE_PATH:-../.env}
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
@@ -84,7 +84,7 @@ x-airflow-common:
     - ../dags:/opt/airflow/dags
     - ../src:/churn_source/src
     - ../.env:/churn_source/.env:ro
-    - ../data:/churn_data
+    - ../data:/data
 
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:

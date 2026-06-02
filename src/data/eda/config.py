@@ -48,6 +48,10 @@ class EdaConfig:
         Minimum bin proportion for WoE (Laplace guard).
     temporal_window_months : int
         How many months back for temporal analysis.
+    temporal_sample_rows : int
+        Maximum rows loaded per monthly snapshot.
+    temporal_sample_percent : float
+        PostgreSQL block-sampling percentage used before the row cap.
     is_baseline_run : bool
         Whether to save current run as baseline snapshot.
     schema : str
@@ -75,6 +79,8 @@ class EdaConfig:
 
     # Temporal
     temporal_window_months: int = 6
+    temporal_sample_rows: int = 50_000
+    temporal_sample_percent: float = 25.0
 
     # Baseline
     is_baseline_run: bool = False
@@ -127,6 +133,16 @@ class EdaConfig:
                 f"temporal_window_months must be >= 1, "
                 f"got {self.temporal_window_months}"
             )
+        if self.temporal_sample_rows < 1:
+            raise ValueError(
+                f"temporal_sample_rows must be >= 1, "
+                f"got {self.temporal_sample_rows}"
+            )
+        if not (0 < self.temporal_sample_percent <= 100):
+            raise ValueError(
+                f"temporal_sample_percent must be in (0, 100], "
+                f"got {self.temporal_sample_percent}"
+            )
 
     # ── Logging-safe representation ──────────────────────
     def to_safe_dict(self) -> dict:
@@ -141,6 +157,8 @@ class EdaConfig:
             "n_bins": self.n_bins,
             "woe_min_pct": self.woe_min_pct,
             "temporal_window_months": self.temporal_window_months,
+            "temporal_sample_rows": self.temporal_sample_rows,
+            "temporal_sample_percent": self.temporal_sample_percent,
             "is_baseline_run": self.is_baseline_run,
             "schema": self.schema,
             "visualize": self.visualize,

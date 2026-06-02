@@ -30,6 +30,12 @@ class TestModelConfigDefaults:
     def test_default_eval_metric(self):
         assert ModelConfig().eval_metric == ["logloss", "aucpr"]
 
+    def test_default_guardrail_metrics(self):
+        cfg = ModelConfig()
+        assert cfg.min_f05 == 0.10
+        assert cfg.min_pr_auc == 0.05
+        assert cfg.min_recall == 0.10
+
 
 class TestModelConfigValidation:
     """validate() should reject invalid hyperparameters."""
@@ -84,20 +90,34 @@ class TestModelConfigValidation:
         with pytest.raises(ValueError, match="colsample_bytree"):
             cfg.validate()
 
-    def test_invalid_risk_threshold_negative(self):
-        cfg = ModelConfig(risk_threshold_pct=-1.0)
-        with pytest.raises(ValueError, match="risk_threshold_pct"):
+    def test_invalid_risk_top_percentile_zero(self):
+        cfg = ModelConfig(risk_top_percentile=0.0)
+        with pytest.raises(ValueError, match="risk_top_percentile"):
             cfg.validate()
 
-    def test_invalid_risk_threshold_above_100(self):
-        cfg = ModelConfig(risk_threshold_pct=101.0)
-        with pytest.raises(ValueError, match="risk_threshold_pct"):
+    def test_invalid_risk_top_percentile_above_100(self):
+        cfg = ModelConfig(risk_top_percentile=101.0)
+        with pytest.raises(ValueError, match="risk_top_percentile"):
             cfg.validate()
 
-    def test_valid_risk_threshold_boundaries(self):
-        """0 and 100 should both be valid."""
-        ModelConfig(risk_threshold_pct=0.0).validate()
-        ModelConfig(risk_threshold_pct=100.0).validate()
+    def test_invalid_risk_max_customers_zero(self):
+        cfg = ModelConfig(risk_max_customers=0)
+        with pytest.raises(ValueError, match="risk_max_customers"):
+            cfg.validate()
+
+    def test_valid_risk_top_percentile_boundary(self):
+        """100 should be valid."""
+        ModelConfig(risk_top_percentile=100.0).validate()
+
+    def test_invalid_min_recall_above_one(self):
+        cfg = ModelConfig(min_recall=1.1)
+        with pytest.raises(ValueError, match="min_recall"):
+            cfg.validate()
+
+    def test_invalid_f05_improve_eps_negative(self):
+        cfg = ModelConfig(f05_improve_eps=-0.1)
+        with pytest.raises(ValueError, match="f05_improve_eps"):
+            cfg.validate()
 
 
 class TestModelConfigSerialization:
@@ -134,7 +154,8 @@ class TestModelConfigSerialization:
         assert "max_depth" in safe
         assert "learning_rate" in safe
         assert "n_estimators" in safe
-        assert "risk_threshold_pct" in safe
+        assert "risk_top_percentile" in safe
+        assert safe["risk_max_customers"] == 5000
 
     def test_to_xgb_params_reflects_custom_values(self):
         cfg = ModelConfig(max_depth=10, learning_rate=0.1, subsample=0.5)

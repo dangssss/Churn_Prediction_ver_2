@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -159,16 +160,22 @@ def _load_feature_data(
     """
     from sqlalchemy import text
 
+    table = _find_latest_feature_snapshot(engine, window_end)
+    if table:
+        logger.info("Loading sampled primary snapshot: data_window.%s", table)
+        with engine.connect() as conn:
+            return pd.read_sql(_build_temporal_sample_query(table, config), conn)
+
     # Try window table first
     if window_end:
         table = f"data_window.cus_feature_{config.temporal_window_months}m"
         try:
-            q = text(f"SELECT * FROM {table} LIMIT 1")
+            q = text(f"SELECT * FROM {table} LIMIT 1")  # noqa: S608
             with engine.connect() as conn:
                 conn.execute(q)
             logger.info("Loading from %s", table)
             with engine.connect() as conn:
-                df = pd.read_sql(f"SELECT * FROM {table}", conn)
+                df = pd.read_sql(f"SELECT * FROM {table}", conn)  # noqa: S608
             return df
         except Exception:
             logger.warning("Table %s not found — trying lifetime", table)
@@ -178,6 +185,27 @@ def _load_feature_data(
     with engine.connect() as conn:
         df = pd.read_sql("SELECT * FROM data_static.cus_lifetime", conn)
     return df
+
+
+def _find_latest_feature_snapshot(
+    engine: Engine,
+    window_end: int | None,
+) -> str | None:
+    """Return the newest generated feature table, optionally at one cutoff."""
+    from sqlalchemy import text
+
+    suffix = f"%_{window_end}" if window_end else "%"
+    q = text("""
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'data_window'
+          AND table_name LIKE 'cus_feature_%'
+          AND table_name LIKE :suffix
+        ORDER BY RIGHT(table_name, 4) DESC, table_name DESC
+        LIMIT 1
+    """)
+    with engine.connect() as conn:
+        return conn.execute(q, {"suffix": suffix}).scalar_one_or_none()
 
 
 # ── CLI entry point ─────────────────────────────────────
@@ -228,6 +256,12 @@ def main() -> int:
         config = EdaConfig(
             is_baseline_run=is_baseline,
             temporal_window_months=temporal_months,
+            temporal_sample_rows=int(
+                os.environ.get("EDA_TEMPORAL_SAMPLE_ROWS", "50000"),
+            ),
+            temporal_sample_percent=float(
+                os.environ.get("EDA_TEMPORAL_SAMPLE_PERCENT", "25"),
+            ),
             visualize=os.environ.get(
                 "EDA_VISUALIZE", "false",
             ).lower() in ("true", "1", "yes"),
@@ -235,6 +269,7 @@ def main() -> int:
                 "EDA_REPORT_DIR", "reports/eda",
             )),
         )
+        config.validate()
 
         # Temporal data loading (optional)
         dfs_by_month = None
@@ -302,11 +337,24 @@ def _load_temporal_data(
             continue
         logger.info("Loading temporal snapshot: data_window.%s", tbl)
         with engine.connect() as conn:
-            df = pd.read_sql(f"SELECT * FROM data_window.{tbl}", conn)
+            df = pd.read_sql(_build_temporal_sample_query(tbl, config), conn)
         dfs_by_month[yymm] = df
 
     logger.info("Loaded %d monthly snapshots", len(dfs_by_month))
     return dfs_by_month
+
+
+def _build_temporal_sample_query(table_name: str, config: EdaConfig) -> str:
+    """Build a bounded, repeatable PostgreSQL sample query for one snapshot."""
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", table_name):
+        raise ValueError(f"Unsafe temporal snapshot table name: {table_name!r}")
+
+    return (
+        f"SELECT * FROM data_window.{table_name} "  # noqa: S608
+        f"TABLESAMPLE SYSTEM ({config.temporal_sample_percent}) "
+        "REPEATABLE (42) "
+        f"LIMIT {config.temporal_sample_rows}"
+    )
 
 
 if __name__ == "__main__":

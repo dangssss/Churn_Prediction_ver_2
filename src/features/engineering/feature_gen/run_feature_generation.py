@@ -14,7 +14,10 @@ from features.engineering.feature_gen.db_utils import (
     ensure_feature_source_schema,
     ensure_public_tables_exist,
 )
-from features.engineering.feature_gen.render_and_execute_templates import render_and_run_all, run_static_aggregate
+from features.engineering.feature_gen.render_and_execute_templates import (
+    render_and_run_all,
+    run_lifetime_snapshots,
+)
 from features.engineering.feature_gen.window_quality import (
     ensure_window_quality_table,
     validate_and_record_lifetime_quality,
@@ -30,6 +33,18 @@ logger = get_logger("run_feature_generation")
 
 BASE = Path(__file__).resolve().parents[1]
 DB_STATIC_SQL = BASE / "database" / "sql" / "data_static" / "lifetime_template.sql"
+
+
+def _get_static_recompute_last_n(default_value: int) -> int:
+    """Read the static-snapshot retry tail without changing window recomputation."""
+    raw_value = os.environ.get("FEATURE_STATIC_RECOMPUTE_LAST_N", str(default_value))
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("FEATURE_STATIC_RECOMPUTE_LAST_N must be an integer") from exc
+    if value < 0:
+        raise ValueError("FEATURE_STATIC_RECOMPUTE_LAST_N must be >= 0")
+    return value
 
 
 def _drop_recreate_schema(engine, schema_name: str):
@@ -49,6 +64,7 @@ def run(args):
         recompute_last_n = getattr(args, "recompute_last_n", 2)
         if recompute_last_n < 0:
             raise ValueError("--recompute-last-n must be >= 0")
+        static_recompute_last_n = _get_static_recompute_last_n(recompute_last_n)
         feature_run_id = getattr(args, "feature_run_id", None) or uuid.uuid4().hex
 
         # Get database URL
@@ -122,7 +138,10 @@ def run(args):
                 if cas_max is not None:
                     return cas_max
             except Exception:
-                pass
+                logger.warning(
+                    "Unable to derive latest month from public.cas_customer",
+                    exc_info=True,
+                )
 
             # 3) fallback_end / today
             fb = _to_date(fallback_end) if fallback_end is not None else None
@@ -166,8 +185,17 @@ def run(args):
         logger.info("Schemas initialized")
 
         def run_lifetime(engine):
-            logger.info("Aggregating static features...")
-            run_static_aggregate(engine)
+            logger.info(
+                "Aggregating static features (recompute_last_n=%d)...",
+                static_recompute_last_n,
+            )
+            run_lifetime_snapshots(
+                engine,
+                default_start,
+                end_date,
+                incremental=incremental,
+                recompute_last_n=static_recompute_last_n,
+            )
             with engine.begin() as conn:
                 result = conn.execute(text("SELECT COUNT(*) FROM data_static.cus_lifetime;"))
                 count = result.scalar()

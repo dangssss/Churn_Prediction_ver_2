@@ -47,6 +47,16 @@ class TestEdaConfig:
         with pytest.raises(ValueError, match="temporal_window_months"):
             cfg.validate()
 
+    def test_should_reject_zero_temporal_sample_rows(self) -> None:
+        cfg = EdaConfig(temporal_sample_rows=0)
+        with pytest.raises(ValueError, match="temporal_sample_rows"):
+            cfg.validate()
+
+    def test_should_reject_invalid_temporal_sample_percent(self) -> None:
+        cfg = EdaConfig(temporal_sample_percent=101)
+        with pytest.raises(ValueError, match="temporal_sample_percent"):
+            cfg.validate()
+
     def test_should_return_safe_dict_without_feature_list(self) -> None:
         cfg = EdaConfig()
         d = cfg.to_safe_dict()

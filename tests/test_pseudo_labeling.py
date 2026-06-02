@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
+from data.preprocessing.dataset_prep.label_calibration import (
+    PseudoLabelThresholds,
+)
 from data.preprocessing.dataset_prep.pseudo_labeling import assign_pseudo_labels
 
 
@@ -29,6 +31,14 @@ class TestAssignPseudoLabels:
             "sim_score": np.zeros(n),  # Will be overwritten
         })
 
+    @staticmethod
+    def _thresholds() -> PseudoLabelThresholds:
+        return PseudoLabelThresholds(
+            sim_threshold=0.5,
+            recency_reliable_neg=30,
+            trend_down_ratio=0.85,
+        )
+
     def test_confirmed_overrides_all(self):
         """Confirmed IDs should always be labeled 'confirmed'."""
         df = self._make_active_df()
@@ -37,8 +47,7 @@ class TestAssignPseudoLabels:
             df,
             prototype={},  # Empty prototype → sim_score = 0
             eval_ids=eval_ids,
-            sim_threshold=0.5,
-            recency_reliable_neg=30,
+            thresholds=self._thresholds(),
         )
         confirmed = result[result["cms_code_enc"].isin(eval_ids)]
         assert (confirmed["label_source"] == "confirmed").all()
@@ -50,8 +59,7 @@ class TestAssignPseudoLabels:
             df,
             prototype={},
             eval_ids=set(),
-            sim_threshold=0.5,
-            recency_reliable_neg=30,
+            thresholds=self._thresholds(),
         )
         valid_labels = {"confirmed", "pseudo_churn", "reliable_neg", "pu_unlabeled"}
         assert set(result["label_source"].unique()).issubset(valid_labels)
@@ -63,8 +71,7 @@ class TestAssignPseudoLabels:
             df,
             prototype={},
             eval_ids=set(),
-            sim_threshold=0.5,
-            recency_reliable_neg=30,
+            thresholds=self._thresholds(),
         )
         assert "sim_score" in result.columns
         assert "label_source" in result.columns
@@ -77,7 +84,6 @@ class TestAssignPseudoLabels:
             df,
             prototype={},
             eval_ids=set(),
-            sim_threshold=0.5,
-            recency_reliable_neg=30,
+            thresholds=self._thresholds(),
         )
         assert set(df.columns) == original_cols

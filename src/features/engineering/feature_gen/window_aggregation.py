@@ -1,9 +1,10 @@
+import os
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect
 
 from features.engineering.feature_gen.db_utils import discover_bccp_tables
 from features.engineering.feature_gen.template_engine import render_template
@@ -28,7 +29,7 @@ from shared.logging_config import get_logger
 logger = get_logger("window_aggregation")
 
 # ── Configuration ──────────────────────────────────────────
-MAX_PARALLEL_WORKERS = 4  # Parallel INSERT workers (GP-3)
+DEFAULT_MAX_PARALLEL_WORKERS = 2
 
 # Staging table names (UNLOGGED for cross-connection visibility)
 _STG_MONTHLY = "data_window._stg_monthly"
@@ -41,6 +42,21 @@ def build_relative_suffix(month_offset: int) -> str:
     if month_offset == 0:
         return "last"
     return f"{month_offset}m_ago"
+
+
+def _get_max_parallel_workers() -> int:
+    """Read the bounded parallelism used for disk-heavy window inserts."""
+    raw_value = os.environ.get(
+        "FEATURE_MAX_PARALLEL_WORKERS",
+        str(DEFAULT_MAX_PARALLEL_WORKERS),
+    )
+    try:
+        workers = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("FEATURE_MAX_PARALLEL_WORKERS must be an integer") from exc
+    if workers < 1:
+        raise ValueError("FEATURE_MAX_PARALLEL_WORKERS must be >= 1")
+    return workers
 
 
 def _create_staging_tables(engine, global_start: str, bccp_tables: list[str]):
@@ -64,6 +80,21 @@ def _create_staging_tables(engine, global_start: str, bccp_tables: list[str]):
         conn.exec_driver_sql(f"DROP TABLE IF EXISTS {_STG_COMPLAINT}")
         conn.exec_driver_sql(f"DROP TABLE IF EXISTS {_STG_BCCP}")
 
+        negative_fee_count = conn.exec_driver_sql(
+            """
+            SELECT COUNT(*)
+            FROM public.cas_customer
+            WHERE report_month >= %s
+              AND total_fee < 0
+            """,
+            (global_start,),
+        ).scalar_one()
+        if negative_fee_count:
+            logger.warning(
+                "Neutralizing %d cas_customer rows with negative total_fee during feature aggregation",
+                negative_fee_count,
+            )
+
         # ── 1. _stg_monthly: pre-aggregated monthly sums with ALL columns ──
         conn.exec_driver_sql(f"""
             CREATE UNLOGGED TABLE {_STG_MONTHLY} AS
@@ -73,7 +104,7 @@ def _create_staging_tables(engine, global_start: str, bccp_tables: list[str]):
                 to_char(report_month, 'YYMM')::bigint AS month_key_num,
                 MIN(report_month) AS report_month,
                 SUM(item_count)::bigint AS item_sum,
-                SUM(total_fee)::bigint AS revenue_sum,
+                SUM(GREATEST(total_fee, 0))::bigint AS revenue_sum,
                 SUM(total_complaint)::bigint AS complaint_sum,
                 SUM(delay_count)::bigint AS delay_sum,
                 SUM(nodone)::bigint AS nodone_sum,
@@ -101,6 +132,7 @@ def _create_staging_tables(engine, global_start: str, bccp_tables: list[str]):
             WHERE report_month >= DATE '{global_start}'
             GROUP BY cms_code_enc, to_char(report_month, 'YYMM'), to_char(report_month, 'YYMM')::bigint
         """)
+        conn.exec_driver_sql(f"ALTER TABLE {_STG_MONTHLY} SET (autovacuum_enabled = false)")
         conn.exec_driver_sql(f"CREATE INDEX ON {_STG_MONTHLY} (cms_code_enc, month_key)")
         conn.exec_driver_sql(f"CREATE INDEX ON {_STG_MONTHLY} (report_month)")
         conn.exec_driver_sql(f"ANALYZE {_STG_MONTHLY}")
@@ -115,6 +147,7 @@ def _create_staging_tables(engine, global_start: str, bccp_tables: list[str]):
             FROM public.cms_complaint
             WHERE create_complaint_date >= DATE '{global_start}'
         """)
+        conn.exec_driver_sql(f"ALTER TABLE {_STG_COMPLAINT} SET (autovacuum_enabled = false)")
         conn.exec_driver_sql(
             f"CREATE INDEX ON {_STG_COMPLAINT} (cms_code_enc, create_complaint_date)"
         )
@@ -142,6 +175,7 @@ def _create_staging_tables(engine, global_start: str, bccp_tables: list[str]):
                 FROM public.bccp_orderitem
                 WHERE sending_time >= DATE '{global_start}'
             """)
+        conn.exec_driver_sql(f"ALTER TABLE {_STG_BCCP} SET (autovacuum_enabled = false)")
         conn.exec_driver_sql(f"CREATE INDEX ON {_STG_BCCP} (cms_code_enc, send_date)")
         conn.exec_driver_sql(f"ANALYZE {_STG_BCCP}")
 
@@ -382,12 +416,13 @@ def render_and_run_all(
         total = len(all_sql_pairs)
         t0 = time.time()
 
+        max_parallel_workers = _get_max_parallel_workers()
         logger.info(
-            f"Starting parallel INSERT with {MAX_PARALLEL_WORKERS} workers "
+            f"Starting parallel INSERT with {max_parallel_workers} workers "
             f"({total} windows)..."
         )
 
-        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_WORKERS) as pool:
+        with ThreadPoolExecutor(max_workers=max_parallel_workers) as pool:
             futures = {}
             for idx, (spec, _, insert_sql) in enumerate(all_sql_pairs, 1):
                 table_name = spec["table_name"]
@@ -462,7 +497,7 @@ def _render_window_sqls(
     select_parts = []
     insert_parts = []
 
-    for idx, (month_key, rel_suffix) in enumerate(zip(month_keys, rel_suffixes)):
+    for month_key, rel_suffix in zip(month_keys, rel_suffixes, strict=True):
         case_parts.append(
             f"MAX(CASE WHEN month_key = '{month_key}' THEN item_sum END) AS \"item_{rel_suffix}\", "
             f"MAX(CASE WHEN month_key = '{month_key}' THEN revenue_sum END) AS \"revenue_{rel_suffix}\", "

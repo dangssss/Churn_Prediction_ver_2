@@ -1,4 +1,8 @@
 from features.engineering.feature_gen.window_quality import (
+    LIFETIME_NON_NEGATIVE_RATE_COLUMNS,
+    LIFETIME_RATIO_COLUMNS,
+    NON_NEGATIVE_RATE_COLUMNS,
+    RATIO_COLUMNS,
     BatchConsistencyMetrics,
     LifetimeQualityMetrics,
     WindowQualityMetrics,
@@ -11,6 +15,13 @@ from features.engineering.feature_gen.window_quality import (
     evaluate_window_quality,
     metrics_from_mapping,
 )
+
+
+def test_complaint_rate_is_non_negative_but_not_bounded_to_one():
+    assert "pct_complaint" not in RATIO_COLUMNS
+    assert NON_NEGATIVE_RATE_COLUMNS == ("pct_complaint",)
+    assert "lifetime_pct_complaint" not in LIFETIME_RATIO_COLUMNS
+    assert LIFETIME_NON_NEGATIVE_RATE_COLUMNS == ("lifetime_pct_complaint",)
 
 
 def _metrics(**overrides) -> WindowQualityMetrics:
@@ -96,6 +107,8 @@ def test_metrics_from_mapping_builds_summary():
         "active_months",
         "active_days",
         "inactive_days",
+        "avg_noservice_days",
+        "max_consecutive_inactive",
         "recency",
         "frequency",
         "monetary",

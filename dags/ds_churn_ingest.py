@@ -34,14 +34,14 @@ with DAG(
     host_volume = k8s.V1Volume(
         name="host-mount",
         host_path=k8s.V1HostPathVolumeSource(
-            path="/churn_data",  # Path inside the kind node container
+            path="/data",  # Path inside the kind node container
             type="Directory",
         ),
     )
-    
+
     host_mount = k8s.V1VolumeMount(
         name="host-mount",
-        mount_path="/churn_data",
+        mount_path="/data",
         read_only=False
     )
 
@@ -75,7 +75,6 @@ with DAG(
         trigger_dag_id="ds_churn_features",
         conf={
             "upstream_run_id": "{{ run_id }}",
-            "logical_date": "{{ ds }}",
             "ingest_summary": "{{ ti.xcom_pull(task_ids='ingest_scan_and_load_k8s') }}",
         },
         wait_for_completion=False,
@@ -87,7 +86,6 @@ with DAG(
         trigger_dag_id="ds_churn_eda",
         conf={
             "upstream_run_id": "{{ run_id }}",
-            "logical_date": "{{ ds }}",
         },
         wait_for_completion=False,
         reset_dag_run=True,

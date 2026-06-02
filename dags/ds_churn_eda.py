@@ -34,12 +34,12 @@ with DAG(
     volume = k8s.V1Volume(
         name="churn-data-mount",
         host_path=k8s.V1HostPathVolumeSource(
-            path="/churn_data"
+            path="/data"
         ),
     )
     volume_mount = k8s.V1VolumeMount(
         name="churn-data-mount",
-        mount_path="/churn_data",
+        mount_path="/data",
         sub_path=None,
         read_only=False,
     )
@@ -57,8 +57,10 @@ with DAG(
             "PYTHONUNBUFFERED": "1",
             "EDA_TEMPORAL": "true",
             "EDA_TEMPORAL_MONTHS": "6",
+            "EDA_TEMPORAL_SAMPLE_ROWS": "50000",
+            "EDA_TEMPORAL_SAMPLE_PERCENT": "25",
             "EDA_VISUALIZE": "true",
-            "EDA_REPORT_DIR": "/churn_data/reports/eda",
+            "EDA_REPORT_DIR": "/data/reports/eda",
         },
         env_from=[
             k8s.V1EnvFromSource(

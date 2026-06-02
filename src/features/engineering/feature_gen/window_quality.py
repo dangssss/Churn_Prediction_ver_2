@@ -21,13 +21,14 @@ RATIO_COLUMNS = (
     "pct_refund",
     "pct_noaccepted",
     "pct_lost_order",
-    "pct_complaint",
     "pct_complaint_per_item",
     "pct_successful_item",
     "pct_intra_province",
     "pct_international",
     "dominant_service_ratio",
 )
+
+NON_NEGATIVE_RATE_COLUMNS = ("pct_complaint",)
 
 CRITICAL_COLUMNS = (
     "item_sum",
@@ -37,6 +38,8 @@ CRITICAL_COLUMNS = (
     "inactive_months",
     "active_days",
     "inactive_days",
+    "avg_noservice_days",
+    "max_consecutive_inactive",
     "recency",
     "frequency",
     "monetary",
@@ -47,6 +50,7 @@ NON_FINITE_COLUMNS = (
     "item_avg",
     "revenue_avg",
     "complaint_avg",
+    "avg_noservice_days",
     "frequency",
     "monetary",
     *RATIO_COLUMNS,
@@ -59,6 +63,8 @@ SUMMARY_COLUMNS = (
     "active_months",
     "active_days",
     "inactive_days",
+    "avg_noservice_days",
+    "max_consecutive_inactive",
     "recency",
     "frequency",
     "monetary",
@@ -69,12 +75,13 @@ LIFETIME_RATIO_COLUMNS = (
     "lifetime_pct_refund",
     "lifetime_pct_noaccepted",
     "lifetime_pct_lost_order",
-    "lifetime_pct_complaint",
     "lifetime_pct_complaint_per_item",
     "lifetime_pct_successful_item",
     "lifetime_pct_international",
     "lifetime_pct_intra_province",
 )
+
+LIFETIME_NON_NEGATIVE_RATE_COLUMNS = ("lifetime_pct_complaint",)
 
 LIFETIME_NON_FINITE_COLUMNS = (
     "lifetime_total_weight",
@@ -216,6 +223,7 @@ def collect_lifetime_quality_metrics(engine: Any) -> LifetimeQualityMetrics:
             )::bigint AS non_finite_rows,
             COUNT(*) FILTER (
                 WHERE {_ratio_condition(LIFETIME_RATIO_COLUMNS)}
+                   OR {_negative_condition(LIFETIME_NON_NEGATIVE_RATE_COLUMNS)}
             )::bigint AS ratio_out_of_range_rows,
             COUNT(*) FILTER (
                 WHERE lifetime_total_items < 0
@@ -320,6 +328,7 @@ def collect_window_quality_metrics(engine: Any, spec: dict) -> WindowQualityMetr
             )::bigint AS non_finite_rows,
             COUNT(*) FILTER (
                 WHERE {_ratio_condition(RATIO_COLUMNS)}
+                   OR {_negative_condition(NON_NEGATIVE_RATE_COLUMNS)}
             )::bigint AS ratio_out_of_range_rows,
             COUNT(*) FILTER (
                 WHERE item_sum < 0
@@ -333,6 +342,11 @@ def collect_window_quality_metrics(engine: Any, spec: dict) -> WindowQualityMetr
                    OR active_days < 0
                    OR active_days > :window_days
                    OR inactive_days <> :window_days - active_days
+                   OR avg_noservice_days < 0
+                   OR avg_noservice_days > inactive_days
+                   OR max_consecutive_inactive < 0
+                   OR max_consecutive_inactive > inactive_days
+                   OR avg_noservice_days > max_consecutive_inactive
                    OR recency < 0
                    OR recency > :window_days
             )::bigint AS activity_out_of_range_rows,
@@ -460,10 +474,15 @@ def collect_batch_consistency_metrics(
                   )
             )::bigint AS lifetime_violation_rows
         FROM {largest_table} win
-        LEFT JOIN data_static.cus_lifetime lifetime USING (cms_code_enc)
+        LEFT JOIN data_static.cus_lifetime_snapshot lifetime
+          ON lifetime.cms_code_enc = win.cms_code_enc
+         AND lifetime.snapshot_month = :snapshot_month
     """)
     with engine.connect() as conn:
-        lifetime_row = conn.execute(lifetime_sql).mappings().one()
+        lifetime_row = conn.execute(
+            lifetime_sql,
+            {"snapshot_month": datetime.strptime(largest_spec["end_ym"], "%y%m").date()},
+        ).mappings().one()
 
     return BatchConsistencyMetrics(
         compared_window_pairs=len(table_pairs),
@@ -594,6 +613,10 @@ def _ratio_condition(columns: tuple[str, ...]) -> str:
     )
 
 
+def _negative_condition(columns: tuple[str, ...]) -> str:
+    return "\n                   OR ".join(f"{column} < 0" for column in columns)
+
+
 def _nested_window_pairs(window_specs: list[dict]) -> list[tuple[dict, dict]]:
     by_end_yymm: dict[str, list[dict]] = {}
     for spec in window_specs:
@@ -602,7 +625,7 @@ def _nested_window_pairs(window_specs: list[dict]) -> list[tuple[dict, dict]]:
     pairs = []
     for specs in by_end_yymm.values():
         ordered_specs = sorted(specs, key=lambda spec: int(spec["window_size"]))
-        pairs.extend(zip(ordered_specs, ordered_specs[1:]))
+        pairs.extend(zip(ordered_specs, ordered_specs[1:], strict=False))
     return pairs
 
 

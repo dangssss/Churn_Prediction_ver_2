@@ -50,12 +50,14 @@ class ModelConfig:
     scale_pos_weight: float = 1.0
 
     # ── Guardrail thresholds ──────────────────────────────
-    min_f2: float = 0.10
-    min_roc_auc: float = 0.05
-    f2_improve_eps: float = 1e-6
+    min_f05: float = 0.10
+    min_pr_auc: float = 0.05
+    min_recall: float = 0.10
+    f05_improve_eps: float = 1e-6
 
     # ── Scoring ───────────────────────────────────────────
-    risk_threshold_pct: float = 70.0
+    risk_top_percentile: float = 10.0
+    risk_max_customers: int = 5000
 
     # ── Misc ──────────────────────────────────────────────
     random_state: int = 42
@@ -75,8 +77,18 @@ class ModelConfig:
             raise ValueError(f"subsample must be in (0, 1], got {self.subsample}")
         if not (0 < self.colsample_bytree <= 1):
             raise ValueError(f"colsample_bytree must be in (0, 1], got {self.colsample_bytree}")
-        if not (0 <= self.risk_threshold_pct <= 100):
-            raise ValueError(f"risk_threshold_pct must be in [0, 100], got {self.risk_threshold_pct}")
+        if not (0 < self.risk_top_percentile <= 100):
+            raise ValueError(f"risk_top_percentile must be in (0, 100], got {self.risk_top_percentile}")
+        if self.risk_max_customers < 1:
+            raise ValueError(f"risk_max_customers must be >= 1, got {self.risk_max_customers}")
+        if not (0 <= self.min_f05 <= 1):
+            raise ValueError(f"min_f05 must be in [0, 1], got {self.min_f05}")
+        if not (0 <= self.min_pr_auc <= 1):
+            raise ValueError(f"min_pr_auc must be in [0, 1], got {self.min_pr_auc}")
+        if not (0 <= self.min_recall <= 1):
+            raise ValueError(f"min_recall must be in [0, 1], got {self.min_recall}")
+        if self.f05_improve_eps < 0:
+            raise ValueError(f"f05_improve_eps must be >= 0, got {self.f05_improve_eps}")
 
     def to_xgb_params(self) -> dict:
         """Convert to XGBoost parameter dict."""
@@ -105,5 +117,10 @@ class ModelConfig:
             "subsample": self.subsample,
             "colsample_bytree": self.colsample_bytree,
             "early_stopping_rounds": self.early_stopping_rounds,
-            "risk_threshold_pct": self.risk_threshold_pct,
+            "risk_top_percentile": self.risk_top_percentile,
+            "risk_max_customers": self.risk_max_customers,
+            "min_f05": self.min_f05,
+            "min_pr_auc": self.min_pr_auc,
+            "min_recall": self.min_recall,
+            "f05_improve_eps": self.f05_improve_eps,
         }

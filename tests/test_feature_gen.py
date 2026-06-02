@@ -1,6 +1,7 @@
 """Unit tests for feature generation template engine."""
 
 import pytest
+
 from features.engineering.feature_gen.template_engine import (
     TEMPLATE_PATHS,
     clear_cache,
@@ -28,18 +29,18 @@ def test_get_template_loads_from_disk():
 def test_render_template_replaces_placeholders():
     """Verify placeholders like {schema} and {table_name} are correctly replaced."""
     # Usually lifetime_table has placeholders, we'll test the engine string replacement.
-    
+
     # Let's mock the cache to inject a fake template for controlled testing
     from features.engineering.feature_gen.template_engine import _TEMPLATE_CACHE
     _TEMPLATE_CACHE["dummy_test"] = "SELECT * FROM {schema}.{table_name} WHERE id = '{id}'"
-    
+
     rendered = render_template(
-        "dummy_test", 
-        schema="test_schema", 
-        table_name="test_table", 
+        "dummy_test",
+        schema="test_schema",
+        table_name="test_table",
         id="123"
     )
-    
+
     expected = "SELECT * FROM test_schema.test_table WHERE id = '123'"
     assert rendered == expected, f"Expected {expected}, got {rendered}"
 
@@ -80,8 +81,30 @@ def test_sliding_template_defines_recency_as_inclusive_offset_from_window_start(
     """Verify recency is day position of the latest service date inside the window."""
     content = get_template("sliding_aggregate")
 
-    assert "(MAX(send_date) - DATE '{START_DATE}'::date + 1)::int AS recency_days" in content
+    assert "(MAX(ad.send_date) - DATE '{START_DATE}'::date + 1)::int AS recency_days" in content
     assert "DATE '{END_DATE}'::date - MAX(send_date)" not in content
+
+
+def test_sliding_template_calculates_real_no_service_gaps():
+    """Verify activity gaps include window boundaries and no-activity fallback."""
+    content = get_template("sliding_aggregate")
+
+    assert "bccp_inactive_spans AS (" in content
+    assert "LAG(send_date, 1, DATE '{START_DATE}' - 1)" in content
+    assert "(DATE '{END_DATE}' - MAX(send_date))::int AS no_service_days" in content
+    assert "AVG(no_service_days) FILTER (WHERE no_service_days > 0)" in content
+    assert "AS max_consecutive_inactive" in content
+    assert (
+        "COALESCE(bs.avg_noservice_days, "
+        "(DATE '{END_DATE}' - DATE '{START_DATE}' + 1)::double precision)"
+    ) in content
+    assert (
+        "COALESCE(bs.max_consecutive_inactive, "
+        "(DATE '{END_DATE}' - DATE '{START_DATE}' + 1)::int)"
+    ) in content
+    assert "0::int,\n    b.avg_lastday" not in content
+    assert "avg_noservice_days = EXCLUDED.avg_noservice_days" in content
+    assert "max_consecutive_inactive = EXCLUDED.max_consecutive_inactive" in content
 
 
 def test_lifetime_template_handles_single_bccp_order_and_refreshes_contract_classify():
@@ -99,7 +122,19 @@ def test_lifetime_template_counts_distinct_active_report_months():
 
     assert "COUNT(DISTINCT date_trunc('month', report_month))" in content
     assert "FILTER (WHERE item_count > 0)" in content
-    assert "AND report_month <= CURRENT_DATE" in content
-    assert "AND create_complaint_date < CURRENT_DATE + INTERVAL '1 day'" in content
-    assert "AND sending_time < CURRENT_DATE + INTERVAL '1 day'" in content
+    assert "AND report_month <= DATE '{AS_OF_DATE}'" in content
+    assert "AND create_complaint_date < DATE '{AS_OF_DATE}' + INTERVAL '1 day'" in content
+    assert "AND sending_time < DATE '{AS_OF_DATE}' + INTERVAL '1 day'" in content
+    assert "INSERT INTO data_static.cus_lifetime_snapshot" in content
+    assert "DATE '{SNAPSHOT_MONTH}'" in content
+    assert "age(DATE '{AS_OF_DATE}'" in content
     assert "COUNT(report_month) AS lifetime_months_active" not in content
+
+
+def test_lifetime_table_defines_monthly_snapshot_contract():
+    """Verify canonical lifetime snapshots retain one row per customer and month."""
+    content = get_template("lifetime_table")
+
+    assert "data_static.cus_lifetime_snapshot" in content
+    assert "snapshot_month DATE" in content
+    assert "uq_cus_lifetime_snapshot_month_code" in content

@@ -48,13 +48,13 @@ with DAG(
             k8s.V1Volume(
                 name="churn-data-mount",
                 # prod: path="/data/churn_prediction/ftp_churn"
-                host_path=k8s.V1HostPathVolumeSource(path="/churn_data")
+                host_path=k8s.V1HostPathVolumeSource(path="/data")
             )
         ],
         volume_mounts=[
             k8s.V1VolumeMount(
                 name="churn-data-mount",
-                mount_path="/churn_data",
+                mount_path="/data",
                 sub_path=None,
                 read_only=False
             )
