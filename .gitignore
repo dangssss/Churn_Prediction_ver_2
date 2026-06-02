@@ -101,3 +101,6 @@ v1_reference/
 
 # Documentation & Conventions (ignored per user request)
 Coding_conventions/
+
+# Local Helm chart reference dump
+airflow_default_values.yaml
